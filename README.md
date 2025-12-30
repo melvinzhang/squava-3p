@@ -1,5 +1,7 @@
 # Squava for 3 players
 
+Proposed by [Craig Duncan on BGG](https://boardgamegeek.com/thread/1315703/three-player-squava)
+
 A high-performance, 3-player implementation of Squava on an 8x8 board, written in Go by Gemini.
 
 ## The Game
