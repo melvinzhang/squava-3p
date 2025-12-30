@@ -23,12 +23,6 @@ const (
 // Bitboard constants
 const (
 	FileA uint64 = 0x0101010101010101
-	FileB uint64 = FileA << 1
-	FileC uint64 = FileA << 2
-	FileD uint64 = FileA << 3
-	FileE uint64 = FileA << 4
-	FileF uint64 = FileA << 5
-	FileG uint64 = FileA << 6
 	FileH uint64 = 0x8080808080808080
 	Full  uint64 = 0xFFFFFFFFFFFFFFFF
 )
@@ -138,71 +132,39 @@ func CheckLose(bb Bitboard) bool {
 }
 
 func GetWinningMoves(board Board, pID int) Bitboard {
-	myBB := board.GetPlayerBoard(pID)
-	empty := ^board.Occupied
-	var threats Bitboard
+	return GetMovesThatComplete(board.GetPlayerBoard(pID), ^board.Occupied, 4)
+}
 
-	r1 := (myBB >> 1) & Bitboard(^FileH)
-	r2 := (myBB >> 2) & Bitboard(^(FileH | FileG))
-	r3 := (myBB >> 3) & Bitboard(^(FileH | FileG | FileF))
-	
-	t := myBB & r1 & r2
-	threats |= (t << 3) & Bitboard(^(FileA | FileB | FileC))
-	
-	threats |= r1 & r2 & r3
-	
-	t = myBB & r1 & r3
-	threats |= (t << 2) & Bitboard(^(FileA | FileB))
-	
-	t = myBB & r2 & r3
-	threats |= (t << 1) & Bitboard(^FileA)
-	
-	r1 = myBB >> 8
-	r2 = myBB >> 16
-	r3 = myBB >> 24
-	
-t = myBB & r1 & r2
-	threats |= t << 24
-	
-threats |= r1 & r2 & r3
-	
-t = myBB & r1 & r3
-	threats |= t << 16
-	
-t = myBB & r2 & r3
-	threats |= t << 8
-	
-r1 = (myBB >> 9) & Bitboard(^FileH)
-	r2 = (myBB >> 18) & Bitboard(^(FileH | FileG))
-	r3 = (myBB >> 27) & Bitboard(^(FileH | FileG | FileF))
-	
-t = myBB & r1 & r2
-	threats |= (t << 27) & Bitboard(^(FileA | FileB | FileC))
-	
-threats |= r1 & r2 & r3
-	
-t = myBB & r1 & r3
-	threats |= (t << 18) & Bitboard(^(FileA | FileB))
-	
-t = myBB & r2 & r3
-	threats |= (t << 9) & Bitboard(^FileA)
+func GetMovesThatComplete(bb Bitboard, empty Bitboard, length int) Bitboard {
+	var moves uint64
+	b := uint64(bb)
+	e := uint64(empty)
 
-	r1 = (myBB >> 7) & Bitboard(^FileA)
-	r2 = (myBB >> 14) & Bitboard(^(FileA | FileB))
-	r3 = (myBB >> 21) & Bitboard(^(FileA | FileB | FileC))
-	
-t = myBB & r1 & r2
-	threats |= (t << 21) & Bitboard(^(FileH | FileG | FileF))
-	
-threats |= r1 & r2 & r3
-	
-t = myBB & r1 & r3
-	threats |= (t << 14) & Bitboard(^(FileH | FileG))
-	
-t = myBB & r2 & r3
-	threats |= (t << 7) & Bitboard(^FileH)
-	
-	return threats & empty
+	shifts := [4]uint{1, 8, 9, 7}
+	masksR := [4]uint64{uint64(^FileH), 0xffffffffffffffff, uint64(^FileH), uint64(^FileA)}
+	masksL := [4]uint64{uint64(^FileA), 0xffffffffffffffff, uint64(^FileA), uint64(^FileH)}
+
+	for d := 0; d < 4; d++ {
+		s := shifts[d]
+		mr := masksR[d]
+		ml := masksL[d]
+
+		for i := 0; i < length; i++ {
+			res := e
+			l := b
+			for k := 0; k < i; k++ {
+				l = (l << s) & ml
+				res &= l
+			}
+			r := b
+			for k := 0; k < length-1-i; k++ {
+				r = (r >> s) & mr
+				res &= r
+			}
+			moves |= res
+		}
+	}
+	return Bitboard(moves)
 }
 
 func GetValidMoves(board Board, currentPID, nextPID int) []Move {
@@ -367,16 +329,15 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves []Move, players
                 tt[hash] = nextNode
                 
                 // Rollout ONLY for new nodes
-                var result map[int]float64
+                var result [3]float64
                 if nextNode.winnerID != -1 {
-                    result = map[int]float64{nextNode.winnerID: 1.0}
+                    result[nextNode.winnerID] = 1.0
                 } else {
                     result = RunSimulation(nextNode.board, nextNode.remainingPlayers, nextNode.playerToMoveID)
                 }
                 
                 nextNode.U = result
-                nextNode.Q = make(map[int]float64)
-                for k, v := range result { nextNode.Q[k] = v }
+                nextNode.Q = result
             }
             
             // Add Edge
@@ -510,23 +471,22 @@ func (m *MCTSPlayer) Backprop(path []PathStep) {
     for i := len(path) - 1; i >= 0; i-- {
         node := path[i].Node
         
-        sumVisits := 0
-        newQ := make(map[int]float64)
+        sumVisits := 1
+        var newQ [3]float64
         
-        for k, v := range node.U {
-            newQ[k] += v
+        for k := 0; k < 3; k++ {
+            newQ[k] = node.U[k]
         }
-        sumVisits += 1 
         
         for _, edge := range node.Edges {
             sumVisits += edge.Visits
-            for k, v := range edge.Dest.Q {
-                newQ[k] += v * float64(edge.Visits)
+            for k := 0; k < 3; k++ {
+                newQ[k] += edge.Dest.Q[k] * float64(edge.Visits)
             }
         }
         
         node.N = sumVisits
-        for k := range newQ {
+        for k := 0; k < 3; k++ {
             newQ[k] /= float64(node.N)
         }
         node.Q = newQ
@@ -536,8 +496,8 @@ func (m *MCTSPlayer) Backprop(path []PathStep) {
 type MCGSNode struct {
 	board            Board
 	N int 
-    U map[int]float64 
-    Q map[int]float64 
+    U [3]float64 
+    Q [3]float64 
 
     Edges map[Move]*MCGSEdge
     
@@ -558,8 +518,6 @@ func NewMCGSNode(board Board, playerToMoveID int, remainingPlayers []int) *MCGSN
 		playerToMoveID:   playerToMoveID,
 		remainingPlayers: remainingPlayers,
 		winnerID:         -1,
-        U: make(map[int]float64),
-        Q: make(map[int]float64),
 	}
 	node.untriedMoves = node.GetPossibleMoves()
 	return node
@@ -591,34 +549,21 @@ func (n *MCGSNode) GetPossibleMoves() []Move {
 		empty := ^n.board.Occupied
         myBB := n.board.GetPlayerBoard(n.playerToMoveID)
         
-        safeMoves := []Move{}
-        suicideMoves := []Move{}
+        wins := GetMovesThatComplete(myBB, empty, 4)
+        loses := GetMovesThatComplete(myBB, empty, 3)
         
-        for empty != 0 {
-            idx := bits.TrailingZeros64(uint64(empty))
-            move := MoveFromIndex(idx)
-            mask := Bitboard(1) << idx
-            
-            // Check if move wins or loses
-            newBB := myBB | mask
-            isWin := CheckWin(newBB)
-            isLose := CheckLose(newBB)
-            
-            if isWin {
-                safeMoves = append(safeMoves, move)
-            } else if isLose {
-                suicideMoves = append(suicideMoves, move)
-            } else {
-                safeMoves = append(safeMoves, move)
-            }
-            
-            empty &= Bitboard(^(uint64(1) << idx))
+        targets := (empty & ^loses) | wins
+        if targets == 0 {
+            targets = empty & loses & ^wins
         }
         
-        if len(safeMoves) > 0 {
-            return safeMoves
+        moves := make([]Move, 0, bits.OnesCount64(uint64(targets)))
+        for targets != 0 {
+            idx := bits.TrailingZeros64(uint64(targets))
+            moves = append(moves, MoveFromIndex(idx))
+            targets &= Bitboard(^(uint64(1) << idx))
         }
-		return suicideMoves
+        return moves
 	}
 	return validMoves
 }
@@ -669,7 +614,7 @@ func SimulateStep(board Board, players []int, currentID int, move Move) State {
     return State{board: newBoard, nextPlayerID: nextID, remainingPlayers: newPlayers, winnerID: -1}
 }
 
-func RunSimulation(board Board, players []int, currentID int) map[int]float64 {
+func RunSimulation(board Board, players []int, currentID int) [3]float64 {
     simBoard := board
     simPlayers := make([]int, len(players))
     copy(simPlayers, players)
@@ -678,7 +623,9 @@ func RunSimulation(board Board, players []int, currentID int) map[int]float64 {
     
     for {
         if len(simPlayers) == 1 {
-            return map[int]float64{simPlayers[0]: 1.0}
+            var res [3]float64
+            res[simPlayers[0]] = 1.0
+            return res
         }
         
         pIdx := 0
@@ -692,67 +639,34 @@ func RunSimulation(board Board, players []int, currentID int) map[int]float64 {
         
         var movesBitboard Bitboard
         myBB := simBoard.GetPlayerBoard(curr)
+        empty := ^simBoard.Occupied
+        wins := GetMovesThatComplete(myBB, empty, 4)
+        loses := GetMovesThatComplete(myBB, empty, 3)
 
         if threats != 0 || myWins != 0 {
             candidates := threats | myWins
-            
-            // Suicide Pruning within forced moves
-            safeCandidates := Bitboard(0)
-            iter := candidates
-            for iter != 0 {
-                idx := bits.TrailingZeros64(uint64(iter))
-                mask := Bitboard(1) << idx
-                
-                // Win takes precedence over suicide
-                if CheckWin(myBB | mask) {
-                    safeCandidates |= mask
-                } else if !CheckLose(myBB | mask) {
-                    safeCandidates |= mask
-                }
-                iter &= Bitboard(^(uint64(1) << idx))
-            }
+            safeCandidates := (candidates & ^loses) | (candidates & wins)
             
             if safeCandidates != 0 {
                 movesBitboard = safeCandidates
             } else {
-                movesBitboard = candidates // Forced suicide or no safe way to block/win
+                movesBitboard = candidates
             }
         } else {
-            // Suicide Pruning in normal random moves
-            empty := ^simBoard.Occupied
-            
-            safeMoves := Bitboard(0)
-            suicideMoves := Bitboard(0)
-            
-            iter := empty
-            for iter != 0 {
-                idx := bits.TrailingZeros64(uint64(iter))
-                mask := Bitboard(1) << idx
-                
-                newBB := myBB | mask
-                if CheckWin(newBB) {
-                    safeMoves |= mask
-                } else if CheckLose(newBB) {
-                    suicideMoves |= mask
-                } else {
-                    safeMoves |= mask
-                }
-                iter &= Bitboard(^(uint64(1) << idx))
-            }
-            
+            safeMoves := (empty & ^loses) | wins
             if safeMoves != 0 {
                 movesBitboard = safeMoves
             } else {
-                movesBitboard = suicideMoves
+                movesBitboard = empty & loses & ^wins
             }
         }
         
         if movesBitboard == 0 {
-            return map[int]float64{} // Draw
+            return [3]float64{} // Draw
         }
         
         count := bits.OnesCount64(uint64(movesBitboard))
-        if count == 0 { return map[int]float64{} }
+        if count == 0 { return [3]float64{} }
         
         pick := rand.Intn(count)
         var selectedIdx int
@@ -766,7 +680,9 @@ func RunSimulation(board Board, players []int, currentID int) map[int]float64 {
         simBoard.Set(selectedIdx, curr)
         
         if CheckWin(simBoard.GetPlayerBoard(curr)) {
-            return map[int]float64{curr: 1.0}
+            var res [3]float64
+            res[curr] = 1.0
+            return res
         }
         
         if CheckLose(simBoard.GetPlayerBoard(curr)) {
@@ -775,7 +691,9 @@ func RunSimulation(board Board, players []int, currentID int) map[int]float64 {
              simPlayers = simPlayers[:newLen]
              
              if len(simPlayers) == 1 {
-                 return map[int]float64{simPlayers[0]: 1.0}
+                 var res [3]float64
+                 res[simPlayers[0]] = 1.0
+                 return res
              }
              if pIdx >= len(simPlayers) {
                  pIdx = 0
