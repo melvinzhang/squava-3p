@@ -392,17 +392,52 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves []Move, players
         m.Backprop(path)
 	}
 
-    // Select Best Move based on Edge Visits
-	bestVisits := -1
+    // Stats and Selection
+    fmt.Printf("MCGS Stats: %d iterations. Total Nodes in DAG: %d. Reuse Ratio: %.2f\n", m.iterations, len(tt), float64(m.iterations)/float64(len(tt)))
+    
+    myID := players[turnIdx]
+    fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
+    
+    bestVisits := -1
 	var bestMove Move
+    
+    // Sort moves by visits for cleaner output
+    type MoveStat struct {
+        mv Move
+        visits int
+        winrate float64
+    }
+    stats := []MoveStat{}
+    
     if root.Edges != nil {
-        for m, edge := range root.Edges {
+        for mv, edge := range root.Edges {
+            stats = append(stats, MoveStat{mv, edge.Visits, edge.Dest.Q[myID]})
             if edge.Visits > bestVisits {
                 bestVisits = edge.Visits
-                bestMove = m
+                bestMove = mv
             }
         }
-    } else {
+    }
+    
+    // Sort stats by visits descending
+    for i := 0; i < len(stats); i++ {
+        for j := i + 1; j < len(stats); j++ {
+            if stats[i].visits < stats[j].visits {
+                stats[i], stats[j] = stats[j], stats[i]
+            }
+        }
+    }
+    
+    // Print top 5 moves
+    fmt.Println("Top moves:")
+    limit := 5
+    if len(stats) < limit { limit = len(stats) }
+    for i := 0; i < limit; i++ {
+        s := stats[i]
+        fmt.Printf("  %c%d: Visits: %d, Winrate: %.2f%%\n", s.mv.c+65, s.mv.r+1, s.visits, s.winrate*100)
+    }
+
+    if bestVisits == -1 {
         // Fallback
         if len(forcedMoves) > 0 { return forcedMoves[0] }
         empty := ^board.Occupied
@@ -411,9 +446,6 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves []Move, players
             return MoveFromIndex(idx)
         }
     }
-    
-    // Stats
-    fmt.Printf("MCGS Stats: %d iterations. Total Nodes in DAG: %d. Reuse Ratio: %.2f\n", m.iterations, len(tt), float64(m.iterations)/float64(len(tt)))
     
 	return bestMove
 }
@@ -452,7 +484,7 @@ func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
             // Q value from perspective of current player
             q := edge.Dest.Q[current.playerToMoveID]
             
-            u := 1.41 * math.Sqrt(logN / float64(edge.Visits + 1))
+            u := 2.0 * math.Sqrt(logN / float64(edge.Visits + 1))
             score := q + u
             
             if score > bestScore {
