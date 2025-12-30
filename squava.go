@@ -331,85 +331,209 @@ func (m *MCTSPlayer) GetMove(board Board, forcedMoves []Move) Move {
 }
 
 func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves []Move, players []int, turnIdx int) Move {
-	root := NewMCTSNode(board, nil, players[turnIdx], players)
+	tt := make(map[BoardHash]*MCGSNode)
+    rootHash := BoardHash{board.P1, board.P2, board.P3, players[turnIdx]}
+    root := NewMCGSNode(board, players[turnIdx], players)
+    tt[rootHash] = root
 
 	if len(forcedMoves) > 0 {
 		root.untriedMoves = forcedMoves
 	}
 
 	for i := 0; i < m.iterations; i++ {
-		node := root
-
-		for len(node.untriedMoves) == 0 && len(node.children) > 0 {
-			node = node.UCTSelectChild()
-		}
-
-		if len(node.untriedMoves) > 0 {
-			move := node.untriedMoves[rand.Intn(len(node.untriedMoves))]
-			state := SimulateStep(node.board, node.remainingPlayers, node.playerToMoveID, move)
-			node = node.AddChild(move, state)
-		}
-
-		var result map[int]float64
-		if node.winnerID != -1 {
-			result = map[int]float64{node.winnerID: 1.0}
-		} else {
-			result = RunSimulation(node.board, node.remainingPlayers, node.playerToMoveID)
-		}
-
-		for node != nil {
-			node.Update(result)
-			node = node.parent
-		}
+		path := m.Select(root)
+        leaf := path[len(path)-1].Node
+        
+        // Expansion
+        var nextNode *MCGSNode
+        var move Move
+        
+        if len(leaf.untriedMoves) > 0 {
+            idx := rand.Intn(len(leaf.untriedMoves))
+            move = leaf.untriedMoves[idx]
+            
+            // Remove move from untried
+            leaf.untriedMoves = append(leaf.untriedMoves[:idx], leaf.untriedMoves[idx+1:]...)
+            
+            // Calc next state
+            state := SimulateStep(leaf.board, leaf.remainingPlayers, leaf.playerToMoveID, move)
+            hash := BoardHash{state.board.P1, state.board.P2, state.board.P3, state.nextPlayerID}
+            
+            if existing, ok := tt[hash]; ok {
+                nextNode = existing
+            } else {
+                nextNode = NewMCGSNode(state.board, state.nextPlayerID, state.remainingPlayers)
+                nextNode.winnerID = state.winnerID
+                tt[hash] = nextNode
+                
+                // Rollout ONLY for new nodes
+                var result map[int]float64
+                if nextNode.winnerID != -1 {
+                    result = map[int]float64{nextNode.winnerID: 1.0}
+                } else {
+                    result = RunSimulation(nextNode.board, nextNode.remainingPlayers, nextNode.playerToMoveID)
+                }
+                
+                nextNode.U = result
+                nextNode.Q = make(map[int]float64)
+                for k, v := range result { nextNode.Q[k] = v }
+            }
+            
+            // Add Edge
+            if leaf.Edges == nil { leaf.Edges = make(map[Move]*MCGSEdge) }
+            if _, ok := leaf.Edges[move]; !ok {
+                 leaf.Edges[move] = &MCGSEdge{Dest: nextNode, Visits: 0}
+            }
+            // Add to path
+            path = append(path, PathStep{Node: nextNode, Move: move, Edge: leaf.Edges[move]})
+        }
+        
+        // Backprop
+        m.Backprop(path)
 	}
 
-	if len(root.children) == 0 {
+    // Select Best Move based on Edge Visits
+	bestVisits := -1
+	var bestMove Move
+    if root.Edges != nil {
+        for m, edge := range root.Edges {
+            if edge.Visits > bestVisits {
+                bestVisits = edge.Visits
+                bestMove = m
+            }
+        }
+    } else {
+        // Fallback
         if len(forcedMoves) > 0 { return forcedMoves[0] }
         empty := ^board.Occupied
         if empty != 0 {
             idx := bits.TrailingZeros64(uint64(empty))
             return MoveFromIndex(idx)
         }
-		return Move{0, 0}
-	}
-
-	bestVisits := -1
-	var bestMove Move
-	for m, child := range root.children {
-		if child.visits > bestVisits {
-			bestVisits = child.visits
-			bestMove = m
-		}
-	}
+    }
+    
+    // Stats
+    fmt.Printf("MCGS Stats: %d iterations. Total Nodes in DAG: %d. Reuse Ratio: %.2f\n", m.iterations, len(tt), float64(m.iterations)/float64(len(tt)))
+    
 	return bestMove
 }
 
-type MCTSNode struct {
+
+type BoardHash struct {
+    P1, P2, P3 Bitboard
+    PlayerToMoveID int
+}
+
+type PathStep struct {
+    Node *MCGSNode
+    Move Move
+    Edge *MCGSEdge
+}
+
+func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
+    current := root
+    path := []PathStep{{Node: root}}
+    
+    for {
+        if len(current.untriedMoves) > 0 {
+            return path // Expand here
+        }
+        if len(current.Edges) == 0 {
+            return path // Terminal
+        }
+        
+        bestScore := math.Inf(-1)
+        var bestEdge *MCGSEdge
+        var bestMove Move
+        
+        logN := math.Log(float64(current.N + 1)) 
+        
+        for mv, edge := range current.Edges {
+            // Q value from perspective of current player
+            q := edge.Dest.Q[current.playerToMoveID]
+            
+            u := 1.41 * math.Sqrt(logN / float64(edge.Visits + 1))
+            score := q + u
+            
+            if score > bestScore {
+                bestScore = score
+                bestEdge = edge
+                bestMove = mv
+            }
+        }
+        
+        if bestEdge == nil { break } 
+        
+        path = append(path, PathStep{Node: bestEdge.Dest, Move: bestMove, Edge: bestEdge})
+        current = bestEdge.Dest
+    }
+    return path
+}
+
+func (m *MCTSPlayer) Backprop(path []PathStep) {
+    for i := 1; i < len(path); i++ {
+        path[i].Edge.Visits++
+    }
+    
+    for i := len(path) - 1; i >= 0; i-- {
+        node := path[i].Node
+        
+        sumVisits := 0
+        newQ := make(map[int]float64)
+        
+        for k, v := range node.U {
+            newQ[k] += v
+        }
+        sumVisits += 1 
+        
+        for _, edge := range node.Edges {
+            sumVisits += edge.Visits
+            for k, v := range edge.Dest.Q {
+                newQ[k] += v * float64(edge.Visits)
+            }
+        }
+        
+        node.N = sumVisits
+        for k := range newQ {
+            newQ[k] /= float64(node.N)
+        }
+        node.Q = newQ
+    }
+}
+
+type MCGSNode struct {
 	board            Board
-	parent           *MCTSNode
-	children         map[Move]*MCTSNode
-	visits           int
-	wins             float64
+	N int 
+    U map[int]float64 
+    Q map[int]float64 
+
+    Edges map[Move]*MCGSEdge
+    
 	playerToMoveID   int
 	remainingPlayers []int
 	winnerID         int
 	untriedMoves     []Move
 }
 
-func NewMCTSNode(board Board, parent *MCTSNode, playerToMoveID int, remainingPlayers []int) *MCTSNode {
-	node := &MCTSNode{
+type MCGSEdge struct {
+    Dest *MCGSNode
+    Visits int
+}
+
+func NewMCGSNode(board Board, playerToMoveID int, remainingPlayers []int) *MCGSNode {
+	node := &MCGSNode{
 		board:            board,
-		parent:           parent,
-		children:         make(map[Move]*MCTSNode),
 		playerToMoveID:   playerToMoveID,
 		remainingPlayers: remainingPlayers,
 		winnerID:         -1,
+        U: make(map[int]float64),
+        Q: make(map[int]float64),
 	}
 	node.untriedMoves = node.GetPossibleMoves()
 	return node
 }
 
-func (n *MCTSNode) GetPossibleMoves() []Move {
+func (n *MCGSNode) GetPossibleMoves() []Move {
 	if n.winnerID != -1 {
 		return []Move{}
 	}
@@ -467,49 +591,11 @@ func (n *MCTSNode) GetPossibleMoves() []Move {
 	return validMoves
 }
 
-func (n *MCTSNode) UCTSelectChild() *MCTSNode {
-	logVisits := math.Log(float64(n.visits))
-	bestScore := math.Inf(-1)
-	var bestChild *MCTSNode
-
-	for _, child := range n.children {
-		score := math.Inf(1)
-		if child.visits > 0 {
-			winRate := child.wins / float64(child.visits)
-			explore := math.Sqrt(2 * logVisits / float64(child.visits))
-			score = winRate + explore
-		}
-
-		if score > bestScore {
-			bestScore = score
-			bestChild = child
-		}
-	}
-	return bestChild
-}
-
 type State struct {
 	board            Board
 	nextPlayerID     int
 	remainingPlayers []int
 	winnerID         int
-}
-
-func (n *MCTSNode) AddChild(move Move, state State) *MCTSNode {
-	child := NewMCTSNode(state.board, n, state.nextPlayerID, state.remainingPlayers)
-	child.winnerID = state.winnerID
-	n.children[move] = child
-	return child
-}
-
-func (n *MCTSNode) Update(result map[int]float64) {
-	n.visits++
-	if n.parent != nil {
-		mover := n.parent.playerToMoveID
-		if val, ok := result[mover]; ok {
-			n.wins += val
-		}
-	}
 }
 
 // --- Simulation Logic ---
