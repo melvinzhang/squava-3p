@@ -57,6 +57,26 @@ go build squava.go
 - `-iterations`: Number of visits the root node must reach per turn.
 - `-cpuprofile`: File path to write a CPU profile for performance analysis.
 
+### Profiling and Analysis
+
+To analyze the performance of the engine, you can generate a CPU profile and view it using Go's built-in profiling tools:
+
+1. **Generate a profile:**
+   ```bash
+   ./squava -p1 mcts -p2 mcts -p3 mcts -iterations 100000 -cpuprofile cpu.prof
+   ```
+
+2. **View the top bottlenecks in the CLI:**
+   ```bash
+   go tool pprof -top cpu.prof
+   ```
+
+3. **Open an interactive web interface (requires Graphviz):**
+   ```bash
+   go tool pprof -http=:8080 cpu.prof
+   ```
+   This will open a browser window showing a call graph and a flame graph of the execution.
+
 ## Performance Benchmarks
 
 Based on an analysis of 100 games (100,000 iterations per turn):
