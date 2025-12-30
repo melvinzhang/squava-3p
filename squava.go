@@ -16,8 +16,6 @@ import (
 
 const (
 	BoardSize  = 8
-	WinLength  = 4
-	LoseLength = 3
 )
 
 // Bitboard constants
@@ -257,15 +255,6 @@ func parseInput(inp string) (int, int, error) {
 
 func isValidCoord(r, c int) bool {
 	return r >= 0 && r < BoardSize && c >= 0 && c < BoardSize
-}
-
-func containsMove(moves []Move, m Move) bool {
-	for _, v := range moves {
-		if v == m {
-			return true
-		}
-	}
-	return false
 }
 
 // --- MCTS Player ---
