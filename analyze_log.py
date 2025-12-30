@@ -38,7 +38,7 @@ def analyze_squava_log(filepath):
     # Blunder Tracking
     # List of dicts: {game_id, move_num, player, old_wr, new_wr, diff, context}
     blunders = []
-    DROP_THRESHOLD = 15.0
+    DROP_THRESHOLD = 50.0
 
     for game_idx, game_data in enumerate(games):
         moves_in_game = 0
@@ -76,7 +76,7 @@ def analyze_squava_log(filepath):
                 if current_player in player_last_wr:
                     old_wr = player_last_wr[current_player]
                     diff = wr - old_wr
-                    if diff < -DROP_THRESHOLD:
+                    if abs(diff) > DROP_THRESHOLD:
                         # Found a big drop
                         context = move_history[-3:] if len(move_history) >= 3 else move_history
                         blunders.append({
