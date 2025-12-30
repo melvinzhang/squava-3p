@@ -67,5 +67,10 @@ When the AI thinks, it outputs statistics:
 *   **Estimated Winrate:** The AI's confidence in winning from the current position.
 *   **Top Moves:** A breakdown of the most visited moves and their specific win rates.
 
-## License
-MIT
+## Future work
+1. Persistent Transposition Table: Knowledge is now stored in MCTSPlayer, allowing the AI to "remember" and reuse analysis across turns.
+2. Zero-Allocation Search: All map[int]float64 objects have been replaced with [3]float64 arrays. This significantly reduces garbage collection pauses.
+3. Unified Bitwise Move Generation: A new helper GetMovesThatComplete(length int) handles both win-detection (length 4) and suicide-prevention (length 3) using
+   constant-time bitwise shifts.
+4. Optimized Rollout Policy: The simulation loop now uses the bitwise generators to avoid immediate suicide and respect forced blocks without iterating over the board
+   bits.
