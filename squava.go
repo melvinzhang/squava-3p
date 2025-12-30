@@ -36,7 +36,7 @@ type Board struct {
 type Bitboard uint64
 
 type Player interface {
-	GetMove(board Board, forcedMoves []Move) Move
+	GetMove(board Board, forcedMoves Bitboard) Move
 	Name() string
 	Symbol() string
 	ID() int // 0, 1, 2
@@ -136,54 +136,44 @@ func GetWinningMoves(board Board, pID int) Bitboard {
 }
 
 func GetMovesThatComplete(bb Bitboard, empty Bitboard, length int) Bitboard {
-	var moves uint64
 	b := uint64(bb)
 	e := uint64(empty)
+	var moves uint64
 
 	shifts := [4]uint{1, 8, 9, 7}
-	masksR := [4]uint64{uint64(^FileH), 0xffffffffffffffff, uint64(^FileH), uint64(^FileA)}
-	masksL := [4]uint64{uint64(^FileA), 0xffffffffffffffff, uint64(^FileA), uint64(^FileH)}
+	masksL := [4]uint64{0xFEFEFEFEFEFEFEFE, 0xFFFFFFFFFFFFFFFF, 0xFEFEFEFEFEFEFEFE, 0x7F7F7F7F7F7F7F7F}
+	masksR := [4]uint64{0x7F7F7F7F7F7F7F7F, 0xFFFFFFFFFFFFFFFF, 0x7F7F7F7F7F7F7F7F, 0xFEFEFEFEFEFEFEFE}
 
 	for d := 0; d < 4; d++ {
 		s := shifts[d]
-		mr := masksR[d]
 		ml := masksL[d]
+		mr := masksR[d]
 
-		for i := 0; i < length; i++ {
-			res := e
-			l := b
-			for k := 0; k < i; k++ {
-				l = (l << s) & ml
-				res &= l
-			}
-			r := b
-			for k := 0; k < length-1-i; k++ {
-				r = (r >> s) & mr
-				res &= r
-			}
-			moves |= res
+		l1 := (b << s) & ml
+		r1 := (b >> s) & mr
+		l2 := (l1 << s) & ml
+		r2 := (r1 >> s) & mr
+
+		if length == 4 {
+			l3 := (l2 << s) & ml
+			r3 := (r2 >> s) & mr
+			moves |= e & r1 & r2 & r3
+			moves |= e & l1 & r1 & r2
+			moves |= e & l2 & l1 & r1
+			moves |= e & l3 & l2 & l1
+		} else {
+			moves |= e & r1 & r2
+			moves |= e & l1 & r1
+			moves |= e & l2 & l1
 		}
 	}
 	return Bitboard(moves)
 }
 
-func GetValidMoves(board Board, currentPID, nextPID int) []Move {
+func GetValidMoves(board Board, currentPID, nextPID int) Bitboard {
 	threats := GetWinningMoves(board, nextPID)
 	myWins := GetWinningMoves(board, currentPID)
-	
-	if threats == 0 {
-		return nil
-	}
-	
-	combined := threats | myWins
-	
-	moves := []Move{}
-	for combined != 0 {
-		idx := bits.TrailingZeros64(uint64(combined))
-		moves = append(moves, MoveFromIndex(idx))
-		combined &= Bitboard(^(uint64(1) << idx)) // Corrected: Use Bitboard for the mask
-	}
-	return moves
+	return threats | myWins
 }
 
 // --- Human Player ---
@@ -199,14 +189,18 @@ func (h *HumanPlayer) Name() string { return h.info.name }
 func (h *HumanPlayer) Symbol() string { return h.info.symbol }
 func (h *HumanPlayer) ID() int { return h.info.id }
 
-func (h *HumanPlayer) GetMove(board Board, forcedMoves []Move) Move {
+func (h *HumanPlayer) GetMove(board Board, forcedMoves Bitboard) Move {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		prompt := fmt.Sprintf("%s (%s), enter your move (e.g., A1): ", h.info.name, h.info.symbol)
-		if len(forcedMoves) > 0 {
+		if forcedMoves != 0 {
 			forcedStr := []string{}
-			for _, m := range forcedMoves {
+			temp := forcedMoves
+			for temp != 0 {
+				idx := bits.TrailingZeros64(uint64(temp))
+				m := MoveFromIndex(idx)
 				forcedStr = append(forcedStr, fmt.Sprintf("%c%d", m.c+65, m.r+1))
+				temp &= Bitboard(^(uint64(1) << idx))
 			}
 			fmt.Printf("FORCED MOVE! You must block the next player. Valid moves: %s\n", strings.Join(forcedStr, ", "))
 		}
@@ -233,7 +227,7 @@ func (h *HumanPlayer) GetMove(board Board, forcedMoves []Move) Move {
 		}
 
 		move := Move{r, c}
-		if len(forcedMoves) > 0 && !containsMove(forcedMoves, move) {
+		if forcedMoves != 0 && (forcedMoves&(Bitboard(1)<<idx)) == 0 {
 			fmt.Println("Invalid move. You must block the opponent or win immediately.")
 			continue
 		}
@@ -288,17 +282,17 @@ func (m *MCTSPlayer) Name() string { return m.info.name }
 func (m *MCTSPlayer) Symbol() string { return m.info.symbol }
 func (m *MCTSPlayer) ID() int { return m.info.id }
 
-func (m *MCTSPlayer) GetMove(board Board, forcedMoves []Move) Move {
+func (m *MCTSPlayer) GetMove(board Board, forcedMoves Bitboard) Move {
     return Move{0,0}
 }
 
-func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves []Move, players []int, turnIdx int) Move {
+func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, players []int, turnIdx int) Move {
 	tt := make(map[BoardHash]*MCGSNode)
     rootHash := BoardHash{board.P1, board.P2, board.P3, players[turnIdx]}
     root := NewMCGSNode(board, players[turnIdx], players)
     tt[rootHash] = root
 
-	if len(forcedMoves) > 0 {
+	if forcedMoves != 0 {
 		root.untriedMoves = forcedMoves
 	}
 
@@ -310,12 +304,19 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves []Move, players
         var nextNode *MCGSNode
         var move Move
         
-        if len(leaf.untriedMoves) > 0 {
-            idx := rand.Intn(len(leaf.untriedMoves))
-            move = leaf.untriedMoves[idx]
+        if leaf.untriedMoves != 0 {
+            count := bits.OnesCount64(uint64(leaf.untriedMoves))
+            pick := rand.Intn(count)
+            
+            temp := uint64(leaf.untriedMoves)
+            for j := 0; j < pick; j++ {
+                temp &= temp - 1
+            }
+            idx := bits.TrailingZeros64(temp)
+            move = MoveFromIndex(idx)
             
             // Remove move from untried
-            leaf.untriedMoves = append(leaf.untriedMoves[:idx], leaf.untriedMoves[idx+1:]...)
+            leaf.untriedMoves &= Bitboard(^(uint64(1) << idx))
             
             // Calc next state
             state := SimulateStep(leaf.board, leaf.remainingPlayers, leaf.playerToMoveID, move)
@@ -400,7 +401,10 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves []Move, players
 
     if bestVisits == -1 {
         // Fallback
-        if len(forcedMoves) > 0 { return forcedMoves[0] }
+        if forcedMoves != 0 {
+             idx := bits.TrailingZeros64(uint64(forcedMoves))
+             return MoveFromIndex(idx)
+        }
         empty := ^board.Occupied
         if empty != 0 {
             idx := bits.TrailingZeros64(uint64(empty))
@@ -428,7 +432,7 @@ func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
     path := []PathStep{{Node: root}}
     
     for {
-        if len(current.untriedMoves) > 0 {
+        if current.untriedMoves != 0 {
             return path // Expand here
         }
         if len(current.Edges) == 0 {
@@ -504,7 +508,7 @@ type MCGSNode struct {
 	playerToMoveID   int
 	remainingPlayers []int
 	winnerID         int
-	untriedMoves     []Move
+	untriedMoves     Bitboard
 }
 
 type MCGSEdge struct {
@@ -523,20 +527,20 @@ func NewMCGSNode(board Board, playerToMoveID int, remainingPlayers []int) *MCGSN
 	return node
 }
 
-func (n *MCGSNode) GetPossibleMoves() []Move {
+func (n *MCGSNode) GetPossibleMoves() Bitboard {
 	if n.winnerID != -1 {
-		return []Move{}
+		return 0
 	}
 
 	if len(n.remainingPlayers) == 0 {
-		return []Move{}
+		return 0
 	}
     
     found := false
     for _, id := range n.remainingPlayers {
         if id == n.playerToMoveID { found = true; break }
     }
-    if !found { return []Move{} }
+    if !found { return 0 }
 
     currIdx := 0
     for i, id := range n.remainingPlayers {
@@ -544,28 +548,26 @@ func (n *MCGSNode) GetPossibleMoves() []Move {
     }
     nextID := n.remainingPlayers[(currIdx+1)%len(n.remainingPlayers)]
 
-	validMoves := GetValidMoves(n.board, n.playerToMoveID, nextID)
-	if validMoves == nil {
-		empty := ^n.board.Occupied
-        myBB := n.board.GetPlayerBoard(n.playerToMoveID)
-        
-        wins := GetMovesThatComplete(myBB, empty, 4)
-        loses := GetMovesThatComplete(myBB, empty, 3)
-        
-        targets := (empty & ^loses) | wins
-        if targets == 0 {
-            targets = empty & loses & ^wins
-        }
-        
-        moves := make([]Move, 0, bits.OnesCount64(uint64(targets)))
-        for targets != 0 {
-            idx := bits.TrailingZeros64(uint64(targets))
-            moves = append(moves, MoveFromIndex(idx))
-            targets &= Bitboard(^(uint64(1) << idx))
-        }
-        return moves
-	}
-	return validMoves
+	forced := GetValidMoves(n.board, n.playerToMoveID, nextID)
+	empty := ^n.board.Occupied
+    myBB := n.board.GetPlayerBoard(n.playerToMoveID)
+    
+    wins := GetMovesThatComplete(myBB, empty, 4)
+    loses := GetMovesThatComplete(myBB, empty, 3)
+
+    if forced != 0 {
+        return forced
+    }
+    
+    targets := (empty & ^loses) | wins
+    if targets == 0 {
+        targets = empty & loses & ^wins
+    }
+    if targets == 0 {
+        targets = empty
+    }
+    
+    return targets
 }
 
 type State struct {
