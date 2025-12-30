@@ -691,10 +691,60 @@ func RunSimulation(board Board, players []int, currentID int) map[int]float64 {
         myWins := GetWinningMoves(simBoard, curr)
         
         var movesBitboard Bitboard
-        if threats != 0 {
-            movesBitboard = threats | myWins
+        myBB := simBoard.GetPlayerBoard(curr)
+
+        if threats != 0 || myWins != 0 {
+            candidates := threats | myWins
+            
+            // Suicide Pruning within forced moves
+            safeCandidates := Bitboard(0)
+            iter := candidates
+            for iter != 0 {
+                idx := bits.TrailingZeros64(uint64(iter))
+                mask := Bitboard(1) << idx
+                
+                // Win takes precedence over suicide
+                if CheckWin(myBB | mask) {
+                    safeCandidates |= mask
+                } else if !CheckLose(myBB | mask) {
+                    safeCandidates |= mask
+                }
+                iter &= Bitboard(^(uint64(1) << idx))
+            }
+            
+            if safeCandidates != 0 {
+                movesBitboard = safeCandidates
+            } else {
+                movesBitboard = candidates // Forced suicide or no safe way to block/win
+            }
         } else {
-            movesBitboard = ^simBoard.Occupied
+            // Suicide Pruning in normal random moves
+            empty := ^simBoard.Occupied
+            
+            safeMoves := Bitboard(0)
+            suicideMoves := Bitboard(0)
+            
+            iter := empty
+            for iter != 0 {
+                idx := bits.TrailingZeros64(uint64(iter))
+                mask := Bitboard(1) << idx
+                
+                newBB := myBB | mask
+                if CheckWin(newBB) {
+                    safeMoves |= mask
+                } else if CheckLose(newBB) {
+                    suicideMoves |= mask
+                } else {
+                    safeMoves |= mask
+                }
+                iter &= Bitboard(^(uint64(1) << idx))
+            }
+            
+            if safeMoves != 0 {
+                movesBitboard = safeMoves
+            } else {
+                movesBitboard = suicideMoves
+            }
         }
         
         if movesBitboard == 0 {
