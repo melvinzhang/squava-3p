@@ -306,61 +306,62 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 
 	for root.N < m.iterations {
 		path := m.Select(root)
-        leaf := path[len(path)-1].Node
-        
-        // Expansion
-        var nextNode *MCGSNode
-        var move Move
-        
-        if leaf.untriedMoves != 0 {
-            count := bits.OnesCount64(uint64(leaf.untriedMoves))
-            pick := rand.Intn(count)
-            
-            temp := uint64(leaf.untriedMoves)
-            for j := 0; j < pick; j++ {
-                temp &= temp - 1
-            }
-            idx := bits.TrailingZeros64(temp)
-            move = MoveFromIndex(idx)
-            
-            // Remove move from untried
-            leaf.untriedMoves &= Bitboard(^(uint64(1) << idx))
-            
-            // Calc next state
-            state := SimulateStep(leaf.board, leaf.activeMask, leaf.playerToMoveID, move)
-            
-            hash := BoardHash{state.board.P1, state.board.P2, state.board.P3, state.nextPlayerID, state.activeMask}
-            
-            if existing, ok := m.tt[hash]; ok {
-                nextNode = existing
-            } else {
-                nextNode = NewMCGSNode(state.board, state.nextPlayerID, state.activeMask)
-                nextNode.winnerID = state.winnerID
-                m.tt[hash] = nextNode
-                
-                // Rollout ONLY for new nodes
-                var result [3]float64
-                if nextNode.winnerID != -1 {
-                    result[nextNode.winnerID] = 1.0
-                } else {
-                    result = RunSimulation(nextNode.board, nextNode.activeMask, nextNode.playerToMoveID)
-                }
-                
-                nextNode.U = result
-                nextNode.Q = result
-            }
-            
-            // Add Edge
-            if leaf.Edges == nil { leaf.Edges = make(map[Move]*MCGSEdge) }
-            if _, ok := leaf.Edges[move]; !ok {
-                 leaf.Edges[move] = &MCGSEdge{Dest: nextNode, Visits: 0}
-            }
-            // Add to path
-            path = append(path, PathStep{Node: nextNode, Move: move, Edge: leaf.Edges[move]})
-        }
-        
-        // Backprop
-        m.Backprop(path)
+		leaf := path[len(path)-1].Node
+
+		// Expansion
+		var result [3]float64
+		if leaf.untriedMoves != 0 {
+			count := bits.OnesCount64(uint64(leaf.untriedMoves))
+			pick := rand.Intn(count)
+
+			temp := uint64(leaf.untriedMoves)
+			for j := 0; j < pick; j++ {
+				temp &= temp - 1
+			}
+			idx := bits.TrailingZeros64(temp)
+			move := MoveFromIndex(idx)
+
+			// Remove move from untried
+			leaf.untriedMoves &= Bitboard(^(uint64(1) << idx))
+
+			// Calc next state
+			state := SimulateStep(leaf.board, leaf.activeMask, leaf.playerToMoveID, move)
+
+			hash := BoardHash{state.board.P1, state.board.P2, state.board.P3, state.nextPlayerID, state.activeMask}
+
+			var nextNode *MCGSNode
+			if existing, ok := m.tt[hash]; ok {
+				nextNode = existing
+				result = nextNode.Q // Use existing node's Q for backprop
+			} else {
+				nextNode = NewMCGSNode(state.board, state.nextPlayerID, state.activeMask)
+				nextNode.winnerID = state.winnerID
+				m.tt[hash] = nextNode
+
+				// Rollout ONLY for new nodes
+				if nextNode.winnerID != -1 {
+					result[nextNode.winnerID] = 1.0
+				} else {
+					result = RunSimulation(nextNode.board, nextNode.activeMask, nextNode.playerToMoveID)
+				}
+
+				nextNode.U = result
+				nextNode.Q = result
+			}
+
+			// Add Edge (No need to check if exists, move was from untriedMoves)
+			newEdge := &MCGSEdge{Move: move, Dest: nextNode, Visits: 0}
+			leaf.Edges = append(leaf.Edges, newEdge)
+
+			// Add to path
+			path = append(path, PathStep{Node: nextNode, Move: move, Edge: newEdge})
+		} else {
+			// Leaf is terminal or fully expanded
+			result = leaf.Q
+		}
+
+		// Backprop
+		m.Backprop(path, result)
 	}
 
     // Stats and Selection
@@ -380,15 +381,13 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
     }
     stats := []MoveStat{}
     
-    if root.Edges != nil {
-        for mv, edge := range root.Edges {
-            stats = append(stats, MoveStat{mv, edge.Visits, edge.Dest.Q[myID]})
-            if edge.Visits > bestVisits {
-                bestVisits = edge.Visits
-                bestMove = mv
-            }
-        }
-    }
+	for _, edge := range root.Edges {
+		stats = append(stats, MoveStat{edge.Move, edge.Visits, edge.Dest.Q[myID]})
+		if edge.Visits > bestVisits {
+			bestVisits = edge.Visits
+			bestMove = edge.Move
+		}
+	}
     
     // Sort stats by visits descending
     for i := 0; i < len(stats); i++ {
@@ -438,92 +437,79 @@ type PathStep struct {
 }
 
 func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
-    current := root
-    path := []PathStep{{Node: root}}
-    
-    for {
-        if current.untriedMoves != 0 {
-            return path // Expand here
-        }
-        if len(current.Edges) == 0 {
-            return path // Terminal
-        }
-        
-        bestScore := math.Inf(-1)
-        var bestEdge *MCGSEdge
-        var bestMove Move
-        
-        logN := math.Log(float64(current.N + 1)) 
-        
-        for mv, edge := range current.Edges {
-            // Q value from perspective of current player
-            q := edge.Dest.Q[current.playerToMoveID]
-            
-            u := 2.0 * math.Sqrt(logN / float64(edge.Visits + 1))
-            score := q + u
-            
-            if score > bestScore {
-                bestScore = score
-                bestEdge = edge
-                bestMove = mv
-            }
-        }
-        
-        if bestEdge == nil { break } 
-        
-        path = append(path, PathStep{Node: bestEdge.Dest, Move: bestMove, Edge: bestEdge})
-        current = bestEdge.Dest
-    }
-    return path
+	current := root
+	path := []PathStep{{Node: root}}
+
+	for {
+		if current.untriedMoves != 0 {
+			return path // Expand here
+		}
+		if len(current.Edges) == 0 {
+			return path // Terminal
+		}
+
+		bestScore := math.Inf(-1)
+		var bestEdge *MCGSEdge
+
+		logN := math.Log(float64(current.N + 1))
+
+		for _, edge := range current.Edges {
+			// Q value from perspective of current player
+			q := edge.Dest.Q[current.playerToMoveID]
+
+			u := 2.0 * math.Sqrt(logN/float64(edge.Visits+1))
+			score := q + u
+
+			if score > bestScore {
+				bestScore = score
+				bestEdge = edge
+			}
+		}
+
+		if bestEdge == nil {
+			break
+		}
+
+		path = append(path, PathStep{Node: bestEdge.Dest, Move: bestEdge.Move, Edge: bestEdge})
+		current = bestEdge.Dest
+	}
+	return path
 }
 
-func (m *MCTSPlayer) Backprop(path []PathStep) {
-    for i := 1; i < len(path); i++ {
-        path[i].Edge.Visits++
-    }
-    
-    for i := len(path) - 1; i >= 0; i-- {
-        node := path[i].Node
-        
-        sumVisits := 1
-        var newQ [3]float64
-        
-        for k := 0; k < 3; k++ {
-            newQ[k] = node.U[k]
-        }
-        
-        for _, edge := range node.Edges {
-            sumVisits += edge.Visits
-            for k := 0; k < 3; k++ {
-                newQ[k] += edge.Dest.Q[k] * float64(edge.Visits)
-            }
-        }
-        
-        node.N = sumVisits
-        for k := 0; k < 3; k++ {
-            newQ[k] /= float64(node.N)
-        }
-        node.Q = newQ
-    }
+func (m *MCTSPlayer) Backprop(path []PathStep, result [3]float64) {
+	for i := len(path) - 1; i >= 0; i-- {
+		step := path[i]
+		node := step.Node
+
+		node.N++
+		// Incremental mean update: Q = Q + (result - Q) / N
+		fn := float64(node.N)
+		node.Q[0] += (result[0] - node.Q[0]) / fn
+		node.Q[1] += (result[1] - node.Q[1]) / fn
+		node.Q[2] += (result[2] - node.Q[2]) / fn
+
+		if step.Edge != nil {
+			step.Edge.Visits++
+		}
+	}
 }
 
 type MCGSNode struct {
-	board            Board
-	N int 
-    U [3]float64 
-    Q [3]float64 
-
-    Edges map[Move]*MCGSEdge
-    
-	playerToMoveID   int
-	activeMask       uint8
-	winnerID         int
-	untriedMoves     Bitboard
+	board          Board
+	N              int
+	U              [3]float64
+	Q              [3]float64
+	Edges          []*MCGSEdge
+	playerToMoveID int
+	activeMask     uint8
+	winnerID       int
+	untriedMoves   Bitboard
 }
 
 type MCGSEdge struct {
-    Dest *MCGSNode
-    Visits int
+	Move   Move
+	Dest   *MCGSNode
+	Visits int
 }
 
 func NewMCGSNode(board Board, playerToMoveID int, activeMask uint8) *MCGSNode {
