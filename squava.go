@@ -273,10 +273,15 @@ func containsMove(moves []Move, m Move) bool {
 type MCTSPlayer struct {
 	info       PlayerInfo
 	iterations int
+	tt         map[BoardHash]*MCGSNode
 }
 
 func NewMCTSPlayer(name, symbol string, id int, iterations int) *MCTSPlayer {
-	return &MCTSPlayer{info: PlayerInfo{name: name, symbol: symbol, id: id}, iterations: iterations}
+	return &MCTSPlayer{
+		info:       PlayerInfo{name: name, symbol: symbol, id: id},
+		iterations: iterations,
+		tt:         make(map[BoardHash]*MCGSNode),
+	}
 }
 func (m *MCTSPlayer) Name() string { return m.info.name }
 func (m *MCTSPlayer) Symbol() string { return m.info.symbol }
@@ -287,16 +292,27 @@ func (m *MCTSPlayer) GetMove(board Board, forcedMoves Bitboard) Move {
 }
 
 func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, players []int, turnIdx int) Move {
-	tt := make(map[BoardHash]*MCGSNode)
-    rootHash := BoardHash{board.P1, board.P2, board.P3, players[turnIdx]}
-    root := NewMCGSNode(board, players[turnIdx], players)
-    tt[rootHash] = root
+    if m.tt == nil {
+        m.tt = make(map[BoardHash]*MCGSNode)
+    }
+
+    activeMask := uint8(0)
+    for _, pID := range players {
+        activeMask |= 1 << pID
+    }
+
+    rootHash := BoardHash{board.P1, board.P2, board.P3, players[turnIdx], activeMask}
+    root, ok := m.tt[rootHash]
+    if !ok {
+        root = NewMCGSNode(board, players[turnIdx], players)
+        m.tt[rootHash] = root
+    }
 
 	if forcedMoves != 0 {
 		root.untriedMoves = forcedMoves
 	}
 
-	for i := 0; i < m.iterations; i++ {
+	for root.N < m.iterations {
 		path := m.Select(root)
         leaf := path[len(path)-1].Node
         
@@ -320,14 +336,19 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
             
             // Calc next state
             state := SimulateStep(leaf.board, leaf.remainingPlayers, leaf.playerToMoveID, move)
-            hash := BoardHash{state.board.P1, state.board.P2, state.board.P3, state.nextPlayerID}
             
-            if existing, ok := tt[hash]; ok {
+            nextActiveMask := uint8(0)
+            for _, pID := range state.remainingPlayers {
+                nextActiveMask |= 1 << pID
+            }
+            hash := BoardHash{state.board.P1, state.board.P2, state.board.P3, state.nextPlayerID, nextActiveMask}
+            
+            if existing, ok := m.tt[hash]; ok {
                 nextNode = existing
             } else {
                 nextNode = NewMCGSNode(state.board, state.nextPlayerID, state.remainingPlayers)
                 nextNode.winnerID = state.winnerID
-                tt[hash] = nextNode
+                m.tt[hash] = nextNode
                 
                 // Rollout ONLY for new nodes
                 var result [3]float64
@@ -355,7 +376,7 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 	}
 
     // Stats and Selection
-    fmt.Printf("MCGS Stats: %d iterations. Total Nodes in DAG: %d. Reuse Ratio: %.2f\n", m.iterations, len(tt), float64(m.iterations)/float64(len(tt)))
+    fmt.Printf("MCGS Stats: %d persistent nodes. Root visits: %d/%d. Reuse Ratio: %.2f\n", len(m.tt), root.N, m.iterations, float64(root.N)/float64(len(m.tt)))
     
     myID := players[turnIdx]
     fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
@@ -417,8 +438,9 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 
 
 type BoardHash struct {
-    P1, P2, P3 Bitboard
+    P1, P2, P3     Bitboard
     PlayerToMoveID int
+    ActiveMask     uint8
 }
 
 type PathStep struct {
