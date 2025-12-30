@@ -194,7 +194,7 @@ def analyze_squava_log(filepath):
         print(f"  Max Reuse Ratio: {max(reuse_ratios):.2f}")
         
     # 6. Blunders
-    print("\n📉 Significant Winrate Shifts (Possible Blunders > 15%):")
+    print(f"\n📉 Significant Winrate Shifts (Possible Blunders > {DROP_THRESHOLD}%):")
     if not blunders:
         print("  None detected.")
     else:
