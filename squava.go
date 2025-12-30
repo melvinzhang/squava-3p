@@ -142,255 +142,64 @@ func GetWinningMoves(board Board, pID int) Bitboard {
 	empty := ^board.Occupied
 	var threats Bitboard
 
-	// Directions: 1 (H), 8 (V), 9 (D1), 7 (D2)
-	
-	// Helper for shifts with wrapping handling
-	// Right Shift (>> k) looks at "Forward" neighbors (higher index).
-	// Left Shift (<< k) moves bits "Forward".
-	
-	// --- Horizontal (+1) ---
-	// Mask for shifting right (detecting neighbors from higher index)
-	// When shifting P >> 1, we move B->A. We assume wrapping H->A is bad.
-	// So we mask result with ^FileH (prevents A(next row) landing on H).
-	// Actually, P >> 1 moves A2(8) to H1(7). We want to kill bits at H1 derived from A2.
-	// So mask ^FileH is correct.
-	
-	// Patterns: 
-	// 1. XXX. (Gap at i+3). P at i, i+1, i+2.
-	//    Intersection at i: P & (P>>1) & (P>>2).
-	//    Target at i+3: (Intersection << 3).
-	//    Masks: Shift1/2 need ^FileH. Shift Left 3 needs ^(FileF|FileG|FileH) to prevent wrapping rows.
-	
-	// 2. .XXX (Gap at i). P at i+1, i+2, i+3.
-	//    Intersection at i+1: P & (P>>1) & (P>>2). (This is i+1, i+2, i+3 relative to i? No)
-	//    Let's stick to base index.
-	//    If we have P at i+1, i+2, i+3.
-	//    (P >> 1) puts i+1 at i.
-	//    (P >> 2) puts i+2 at i.
-	//    (P >> 3) puts i+3 at i.
-	//    Intersection at i: (P>>1) & (P>>2) & (P>>3).
-	//    This bit 'i' is the empty spot.
-	//    Target is 'i'. So just the intersection.
-	
-	// 3. XX.X (Gap at i+2). P at i, i+1, i+3.
-	//    Intersection at i: P & (P>>1) & (P>>3).
-	//    Target at i+2: (Intersection << 2).
-	
-	// 4. X.XX (Gap at i+1). P at i, i+2, i+3.
-	//    Intersection at i: P & (P>>2) & (P>>3).
-	//    Target at i+1: (Intersection << 1).
-	
-	// --- Horizontal ---
 	r1 := (myBB >> 1) & Bitboard(^FileH)
-	r2 := (myBB >> 2) & Bitboard(^(FileH | FileG)) // Shifting 2, prevent A,B landing on G,H? A2->G1. Yes.
+	r2 := (myBB >> 2) & Bitboard(^(FileH | FileG))
 	r3 := (myBB >> 3) & Bitboard(^(FileH | FileG | FileF))
 	
-	// XXX. -> Gap at i+3. Base `i` (myBB)
 	t := myBB & r1 & r2
-	// Shift left 3. Prevent wrapping. i must be <= E (Col 4).
 	threats |= (t << 3) & Bitboard(^(FileA | FileB | FileC))
 	
-	// .XXX -> Gap at i. Base `r1` (i+1)
 	threats |= r1 & r2 & r3
 	
-	// XX.X -> Gap at i+2. Base `i`.
 	t = myBB & r1 & r3
 	threats |= (t << 2) & Bitboard(^(FileA | FileB))
 	
-	// X.XX -> Gap at i+1. Base `i`.
 	t = myBB & r2 & r3
 	threats |= (t << 1) & Bitboard(^FileA)
 	
-	// --- Vertical (+8) ---
-	// No wrapping issues for shifts (just falls off)
 	r1 = myBB >> 8
 	r2 = myBB >> 16
 	r3 = myBB >> 24
 	
-	// XXX.
-	t = myBB & r1 & r2
+t = myBB & r1 & r2
 	threats |= t << 24
 	
-	// .XXX
-	threats |= r1 & r2 & r3
+threats |= r1 & r2 & r3
 	
-	// XX.X
-	t = myBB & r1 & r3
+t = myBB & r1 & r3
 	threats |= t << 16
 	
-	// X.XX
-	t = myBB & r2 & r3
+t = myBB & r2 & r3
 	threats |= t << 8
 	
-	// --- Diagonal (+9) --- (A1 -> B2)
-	// Shift Right (+9) moves B2(9) to A1(0).
-	// A2(8) -> H0(-1).
-	// H1(7) -> ? (7-9=-2).
-	// Wrapping: A(row i) -> H(row i-1).
-	// A2(8) >> 9 ? No.
-	// H1(7) >> 9? 
-	// We are checking P & (P>>9).
-	// P at B2(9). P>>9 at A1(0).
-	// Intersection at A1.
-	// Is B2 and A1 diagonal? Yes.
-	// Is there bad wrap?
-	// A2(8). A2>>9 = -1.
-	// I1? No I.
-	// H1(7). H1>>9 = -2.
-	// A3(16). A3>>9 = 7 (H1).
-	// A3 and H1 are NOT diagonal.
-	// So we must kill A->H wrap (Left edge wrapping to Right edge of prev row).
-	// `>> 9` puts A(row i) into H(row i-1).
-	// So we must mask `^FileH` on result.
-	
-	r1 = (myBB >> 9) & Bitboard(^FileH)
-	r2 = (myBB >> 18) & Bitboard(^(FileH | FileG)) // A->H, B->G? No.
-	// A3(16)>>18 = -2.
-	// B3(17)>>18 = -1.
-	// C3(18)>>18 = 0 (A1).
-	// C3(2,3) and A1(0,1)? No. (2,2) and (0,0).
-	// C3 is (2,2). A1 is (0,0).
-	// Delta (2,2). Distance 2. Correct.
-	// Wraps: A,B landing on G,H?
-	// A->H. B->?
-	// A3(16) >> 9 = H1(7). (Mask H).
-	// B3(17) >> 9 = A2(8). (OK).
-	// A3(16) >> 18 = -2.
-	// B3(17) >> 18 = -1.
-	// I think we only need to mask based on column count shifted.
-	// Shift 9 (1 col). Mask H.
-	// Shift 18 (2 cols). Mask H, G.
+r1 = (myBB >> 9) & Bitboard(^FileH)
+	r2 = (myBB >> 18) & Bitboard(^(FileH | FileG))
 	r3 = (myBB >> 27) & Bitboard(^(FileH | FileG | FileF))
 	
-	// XXX.
-	t = myBB & r1 & r2
+t = myBB & r1 & r2
 	threats |= (t << 27) & Bitboard(^(FileA | FileB | FileC))
 	
-	// .XXX
-	threats |= r1 & r2 & r3
+threats |= r1 & r2 & r3
 	
-	// XX.X
-	t = myBB & r1 & r3
+t = myBB & r1 & r3
 	threats |= (t << 18) & Bitboard(^(FileA | FileB))
 	
-	// X.XX
-	t = myBB & r2 & r3
+t = myBB & r2 & r3
 	threats |= (t << 9) & Bitboard(^FileA)
 
-	// --- Anti-Diagonal (+7) --- (B1 -> A2)
-	// Shift Right 7. A2(8) -> B1(1).
-	// H1(7) -> A1(0).
-	// H1 and A1 are NOT connected.
-	// So we must kill H->A wrap. (Right edge wrapping to Left edge of prev row).
-	// Mask `^FileA` on result.
-	
 	r1 = (myBB >> 7) & Bitboard(^FileA)
 	r2 = (myBB >> 14) & Bitboard(^(FileA | FileB))
 	r3 = (myBB >> 21) & Bitboard(^(FileA | FileB | FileC))
 	
-	// XXX. (Gap at i+3).
-	// i -> i+3 involves shifting LEFT 21.
-	// A1(0) << 21 = 21 (F3).
-	// A1 and F3 are +3 steps? (0,0) -> (5,2).
-	// No. A1 is (0,0). AntiDiag is (+1, -1)? No.
-	// AntiDiag in array index: +7.
-	// (0,0) -> (7,0)? No.
-	// (0,0) -> (1, -1)? Invalid.
-	// (1,0) B1. +7 = 8 (A2).
-	// (c, r) -> (c-1, r+1).
-	// Step is +7.
-	// 3 steps = +21.
-	// B1(1) + 21 = 22 (G3).
-	// B1 (1,0). G3 (6, 2).
-	// Delta (5, 2). Not diag.
-	// Wait. +7 is (c-1, r+1).
-	// 3 steps: (c-3, r+3).
-	// B1(1,0). (1-3, 0+3) = (-2, 3). 
-	// So we need to shift from Right to Left?
-	// `t` bits are at `i` (start of chain).
-	// `i+21` is the gap?
-	// If `t` is at H1(7). (7,0).
-	// Next is G2(14). F3(21). E4(28).
-	// So yes, gap is at `i+21`.
-	// Wrap check:
-	// H1(7) << 21 = E4. OK.
-	// A2(8) << 21 = 29 (F4).
-	// A2(0,1). (0-3, 1+3) = (-3, 4). Invalid.
-	// So `t` at A2 should NOT produce threat.
-	// We need to mask `t` before shifting left?
-	// `t` is at A. Next is Wrap.
-	// `r1` handled masking for detection.
-	// `t << 21`.
-	// We need to ensure `i` allows 3 steps LEFT.
-	// `i` column must be >= 3 (D, E, F, G, H).
-	// So mask `t` with `^(FileA | FileB | FileC)`.
-	
-	t = myBB & r1 & r2
-	threats |= (t << 21) & Bitboard(^(FileH | FileG | FileF)) // Wait. +7 moves LEFT.
-	// c -> c-1.
-	// Start at `i`. `i` must be "Right" enough to go left 3 times.
-	// Start H. H->G->F->E. OK.
-	// Start C. C->B->A->Wrap.
-	// So `i` must NOT be A, B, C.
-	// So `t` mask `^FileA ^FileB ^FileC`.
-	
-	// .XXX (Gap at i).
-	threats |= r1 & r2 & r3
-	
-	// XX.X (Gap at i+2). +14.
-	// Mask t `^FileA ^FileB`.
-	t = myBB & r1 & r3
-	threats |= (t << 14) & Bitboard(^(FileH | FileG)) // Wait, shifting Left moves index Up.
-	// Index Up means (c-1, r+1).
-	// c decreases.
-	// Start at A(0). +7 -> H(0) wrap? No A(0)+7=7(H0).
-	// A0 is (0,0). H0 is (7,0). NOT ADiag.
-	// A0 wrap is -1.
-	// +7 wrap is A -> H (prev row)? No.
-	// H(r) -> A(r+1).
-	// H1(7) + 7 = 14 (G2). OK.
-	// A2(8) + 7 = 15 (H2).
-	// A2(0,1). H2(7,1).
-	// (0,1) -> (7,1). Delta (7,0). Not ADiag.
-	// ADiag is (0,1) -> (-1, 2) [Invalid]
-	// So A2 should not connect to H2.
-	// A2 << 7 = H2.
-	// We must mask out wrap H.
-	// So result of << 7 must not be in Col H?
-	// If src was A.
-	// So mask result `^FileH`.
-	
-	// Let's re-verify AntiDiag shifts.
-	// +7. Moves A to H (next row)? No.
-	// 0(A1) -> 7(H1). Same row.
-	// A1(0,0). H1(7,0).
-	// This is NOT anti-diagonal.
-	// Anti-diagonal is (1,0) -> (0,1). (1 -> 8). Diff is +7.
-	// 1(B1) + 7 = 8(A2).
-	// So +7 is correct for B->A.
-	// But 0(A1) + 7 = 7(H1).
-	// This is a wrap. A(col 0) -> H(col 7).
-	// We must prevent A connecting to H (on same row/prev row).
-	// So when shifting `<< 7`, we must ensure source was NOT A.
-	// Or result is NOT H.
-	// Wait. 1(B1) -> 8(A2). Result is A. Valid.
-	// 0(A1) -> 7(H1). Result is H. Invalid.
-	// So result must not be H.
-	// `(x << 7) & ^FileH`.
-	
-	// Fix XXX. (Gap at i+3). (+21).
-	t = myBB & r1 & r2
+t = myBB & r1 & r2
 	threats |= (t << 21) & Bitboard(^(FileH | FileG | FileF))
 	
-	// .XXX (Gap at i).
-	threats |= r1 & r2 & r3
+threats |= r1 & r2 & r3
 	
-	// XX.X (Gap at i+2). (+14).
-	t = myBB & r1 & r3
+t = myBB & r1 & r3
 	threats |= (t << 14) & Bitboard(^(FileH | FileG))
 	
-	// X.XX (Gap at i+1). (+7).
-	t = myBB & r2 & r3
+t = myBB & r2 & r3
 	threats |= (t << 7) & Bitboard(^FileH)
 	
 	return threats & empty
@@ -401,16 +210,16 @@ func GetValidMoves(board Board, currentPID, nextPID int) []Move {
 	myWins := GetWinningMoves(board, currentPID)
 	
 	if threats == 0 {
-		return nil // No restrictions
+		return nil
 	}
 	
 	combined := threats | myWins
 	
-moves := []Move{}
+	moves := []Move{}
 	for combined != 0 {
 		idx := bits.TrailingZeros64(uint64(combined))
 		moves = append(moves, MoveFromIndex(idx))
-		combined &= ^(Bitboard(1) << idx)
+		combined &= Bitboard(^(uint64(1) << idx)) // Corrected: Use Bitboard for the mask
 	}
 	return moves
 }
@@ -624,13 +433,36 @@ func (n *MCTSNode) GetPossibleMoves() []Move {
 	validMoves := GetValidMoves(n.board, n.playerToMoveID, nextID)
 	if validMoves == nil {
 		empty := ^n.board.Occupied
-        moves := []Move{}
+        myBB := n.board.GetPlayerBoard(n.playerToMoveID)
+        
+        safeMoves := []Move{}
+        suicideMoves := []Move{}
+        
         for empty != 0 {
             idx := bits.TrailingZeros64(uint64(empty))
-            moves = append(moves, MoveFromIndex(idx))
+            move := MoveFromIndex(idx)
+            mask := Bitboard(1) << idx
+            
+            // Check if move wins or loses
+            newBB := myBB | mask
+            isWin := CheckWin(newBB)
+            isLose := CheckLose(newBB)
+            
+            if isWin {
+                safeMoves = append(safeMoves, move)
+            } else if isLose {
+                suicideMoves = append(suicideMoves, move)
+            } else {
+                safeMoves = append(safeMoves, move)
+            }
+            
             empty &= Bitboard(^(uint64(1) << idx))
         }
-		return moves
+        
+        if len(safeMoves) > 0 {
+            return safeMoves
+        }
+		return suicideMoves
 	}
 	return validMoves
 }
