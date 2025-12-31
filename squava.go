@@ -839,6 +839,7 @@ func (g *SquavaGame) Run() {
 			break
 		}
 		if len(g.players) == 1 {
+			g.PrintBoard()
 			fmt.Printf("%s wins as the last player standing!\n", g.players[0].Name())
 			break
 		}
@@ -846,6 +847,7 @@ func (g *SquavaGame) Run() {
 		nextPlayerIdx := (g.turnIdx + 1) % len(g.players)
 		nextPlayer := g.players[nextPlayerIdx]
 
+		g.PrintBoard()
 		fmt.Printf("Turn: %s (%s)\n", currentPlayer.Name(), currentPlayer.Symbol())
 		var move Move
 		if mcts, ok := currentPlayer.(*MCTSPlayer); ok {
@@ -857,7 +859,6 @@ func (g *SquavaGame) Run() {
 			move = mcts.GetMoveWithContext(g.board, activeIDs, g.turnIdx)
 			fmt.Printf("%s chooses %c%d\n", currentPlayer.Name(), move.c+65, move.r+1)
 		} else {
-			g.PrintBoard()
 			forcedMoves := GetForcedMoves(g.board, currentPlayer.ID(), nextPlayer.ID())
 			move = currentPlayer.GetMove(g.board, forcedMoves)
 		}
@@ -869,6 +870,7 @@ func (g *SquavaGame) Run() {
 			return
 		}
 		if isLoss {
+			g.PrintBoard()
 			fmt.Printf("Oops! %s made 3 in a row and is eliminated!\n", currentPlayer.Name())
 			g.players = append(g.players[:g.turnIdx], g.players[g.turnIdx+1:]...)
 			if g.turnIdx >= len(g.players) {
