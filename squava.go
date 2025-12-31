@@ -126,29 +126,14 @@ func (b *Board) GetPlayerBoard(pID int) Bitboard {
 	}
 	return 0
 }
-func hasNInARow(b uint64, n int) bool {
-	for i := 0; i < 4; i++ {
-		s := shifts[i]
-		m := masksL[i]
-		temp := b
-		for j := 1; j < n; j++ {
-			temp &= (temp << s) & m
-		}
-		if temp != 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
-	b := uint64(bb)
-	isWin = hasNInARow(b, 4)
-	isLoss = !isWin && hasNInARow(b, 3)
+	wins, loses := GetWinsAndLosses(bb, bb)
+	isWin = wins != 0
+	isLoss = !isWin && loses != 0
 	return
 }
 
-func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
+func GetWinsAndLosses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
 	b := uint64(bb)
 	e := uint64(empty)
 	var w, l uint64
@@ -156,61 +141,56 @@ func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard
 	// Direction 0: Horizontal (s=1)
 	{
 		ml, mr := masksL[0], masksR[0]
-		l1 := (b << 1) & ml
 		r1 := (b >> 1) & mr
-		l2 := (l1 << 1) & ml
 		r2 := (r1 >> 1) & mr
-		A := r1 & r2
-		B := l1 & r1
-		C := l1 & l2
-		l |= e & (A | B | C)
-		w |= e & (A&(r2>>1&mr) | A&l1 | C&r1 | C&(l2<<1&ml))
+		r3 := (r2 >> 1) & mr
+		l1 := (b << 1) & ml
+		l2 := (l1 << 1) & ml
+		l3 := (l2 << 1) & ml
+		l |= e & (r1&r2 | r1&l1 | l1&l2)
+		w |= e & (r1&r2&r3 | r1&r2&l1 | r1&l1&l2 | l1&l2&l3)
 	}
 
 	// Direction 1: Vertical (s=8)
 	{
-		l1 := (b << 8)
 		r1 := (b >> 8)
-		l2 := (l1 << 8)
 		r2 := (r1 >> 8)
-		A := r1 & r2
-		B := l1 & r1
-		C := l1 & l2
-		l |= e & (A | B | C)
-		w |= e & (A&(r2>>8) | A&l1 | C&r1 | C&(l2<<8))
+		r3 := (r2 >> 8)
+		l1 := (b << 8)
+		l2 := (l1 << 8)
+		l3 := (l2 << 8)
+		l |= e & (r1&r2 | r1&l1 | l1&l2)
+		w |= e & (r1&r2&r3 | r1&r2&l1 | r1&l1&l2 | l1&l2&l3)
 	}
 
 	// Direction 2: Diagonal (s=9)
 	{
 		ml, mr := masksL[2], masksR[2]
-		l1 := (b << 9) & ml
 		r1 := (b >> 9) & mr
-		l2 := (l1 << 9) & ml
 		r2 := (r1 >> 9) & mr
-		A := r1 & r2
-		B := l1 & r1
-		C := l1 & l2
-		l |= e & (A | B | C)
-		w |= e & (A&(r2>>9&mr) | A&l1 | C&r1 | C&(l2<<9&ml))
+		r3 := (r2 >> 9) & mr
+		l1 := (b << 9) & ml
+		l2 := (l1 << 9) & ml
+		l3 := (l2 << 9) & ml
+		l |= e & (r1&r2 | r1&l1 | l1&l2)
+		w |= e & (r1&r2&r3 | r1&r2&l1 | r1&l1&l2 | l1&l2&l3)
 	}
 
 	// Direction 3: Anti-diagonal (s=7)
 	{
 		ml, mr := masksL[3], masksR[3]
-		l1 := (b << 7) & ml
 		r1 := (b >> 7) & mr
-		l2 := (l1 << 7) & ml
 		r2 := (r1 >> 7) & mr
-		A := r1 & r2
-		B := l1 & r1
-		C := l1 & l2
-		l |= e & (A | B | C)
-		w |= e & (A&(r2>>7&mr) | A&l1 | C&r1 | C&(l2<<7&ml))
+		r3 := (r2 >> 7) & mr
+		l1 := (b << 7) & ml
+		l2 := (l1 << 7) & ml
+		l3 := (l2 << 7) & ml
+		l |= e & (r1&r2 | r1&l1 | l1&l2)
+		w |= e & (r1&r2&r3 | r1&r2&l1 | r1&l1&l2 | l1&l2&l3)
 	}
 
-	return Bitboard(w), Bitboard(l)
+	return Bitboard(w), Bitboard(l & ^w)
 }
-
 // ThreatAnalysis holds pre-calculated win/loss bitboards for a given turn.
 type ThreatAnalysis struct {
 	MyWins   Bitboard
@@ -221,8 +201,8 @@ type ThreatAnalysis struct {
 // AnalyzeThreats calculates the immediate win/loss threats for the current and next player.
 func AnalyzeThreats(board Board, currentPID, nextPID int) ThreatAnalysis {
 	empty := ^board.Occupied
-	myWins, myLoses := GetWinsAndLoses(board.GetPlayerBoard(currentPID), empty)
-	nextWins, _ := GetWinsAndLoses(board.GetPlayerBoard(nextPID), empty)
+	myWins, myLoses := GetWinsAndLosses(board.GetPlayerBoard(currentPID), empty)
+	nextWins, _ := GetWinsAndLosses(board.GetPlayerBoard(nextPID), empty)
 	return ThreatAnalysis{
 		MyWins:   myWins,
 		MyLoses:  myLoses,
@@ -718,7 +698,7 @@ func RunSimulation(board Board, activeMask uint8, currentID int) [3]float64 {
 
 		nextP := getNextPlayer(curr, simMask)
 		empty := ^simBoard.Occupied
-		myWins, myLoses := GetWinsAndLoses(simBoard.GetPlayerBoard(curr), empty)
+		myWins, myLoses := GetWinsAndLosses(simBoard.GetPlayerBoard(curr), empty)
 
 		if myWins != 0 {
 			var res [3]float64
@@ -726,7 +706,7 @@ func RunSimulation(board Board, activeMask uint8, currentID int) [3]float64 {
 			return res
 		}
 
-		nextWins, _ := GetWinsAndLoses(simBoard.GetPlayerBoard(nextP), empty)
+		nextWins, _ := GetWinsAndLosses(simBoard.GetPlayerBoard(nextP), empty)
 
 		var moves Bitboard
 		mustCheckLoss := true
