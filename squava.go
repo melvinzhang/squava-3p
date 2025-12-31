@@ -108,57 +108,91 @@ func (b *Board) GetPlayerBoard(pID int) Bitboard {
 	}
 	return 0
 }
-func CheckWin(bb Bitboard) bool {
+func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 	b := uint64(bb)
-	for d := 0; d < 4; d++ {
-		s := shifts[d]
-		ml := masksL[d]
-		l1 := (b << s) & ml
-		l2 := (l1 << s) & ml
-		l3 := (l2 << s) & ml
-		if (b & l1 & l2 & l3) != 0 {
-			return true
+	var h, v, d1, d2 uint64
+
+	// Horizontal
+	h = b & (b >> 1)
+	// Vertical
+	v = b & (b >> 8)
+	// Diagonal
+	d1 = b & (b >> 9)
+	// Anti-diagonal
+	d2 = b & (b >> 7)
+
+	// A win is 4-in-a-row, which implies two adjacent pairs.
+	// A loss is 3-in-a-row, which implies one pair and an adjacent piece.
+	isWin = ((h & (h >> 2)) & 0xFCFCFCFCFCFCFCFC) != 0 || // H
+		(v & (v >> 16)) != 0 || // V
+		((d1 & (d1 >> 18)) & 0xFCFCFCFCFCFCFCFC) != 0 || // D1
+				((d2 & (d2 >> 14)) & 0x7F7F7F7F7F7F7F7F) != 0 // D2
+		
+			isLoss = !isWin && (((h & (h >> 1)) & 0xFDFDFDFDFDFDFDFD) != 0 || // H
+				(v & (v >> 8)) != 0 || // V
+				((d1 & (d1 >> 9)) & 0xFEFEFEFEFEFEFEFE) != 0 || // D1
+				((d2 & (d2 >> 7)) & 0x7F7F7F7F7F7F7F7F) != 0) // D2
+		
+			return
 		}
-	}
-	return false
-}
-func CheckLose(bb Bitboard) bool {
-	b := uint64(bb)
-	for d := 0; d < 4; d++ {
-		s := shifts[d]
-		ml := masksL[d]
-		l1 := (b << s) & ml
-		l2 := (l1 << s) & ml
-		if (b & l1 & l2) != 0 {
-			return true
-		}
-	}
-	return false
-}
-func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
+		
+		func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
 	b := uint64(bb)
 	e := uint64(empty)
 	var w, l uint64
-	for d := 0; d < 4; d++ {
-		s := shifts[d]
-		ml := masksL[d]
-		mr := masksR[d]
-		l1 := (b << s) & ml
-		r1 := (b >> s) & mr
-		l2 := (l1 << s) & ml
-		r2 := (r1 >> s) & mr
-		// Length 3 (loses)
-		l |= e & r1 & r2
-		l |= e & l1 & r1
-		l |= e & l2 & l1
-		// Length 4 (wins)
-		l3 := (l2 << s) & ml
-		r3 := (r2 >> s) & mr
-		w |= e & r1 & r2 & r3
-		w |= e & l1 & r1 & r2
-		w |= e & l2 & l1 & r1
-		w |= e & l3 & l2 & l1
+
+	// Direction 0: Horizontal (s=1)
+	{
+		ml, mr := masksL[0], masksR[0]
+		l1 := (b << 1) & ml
+		r1 := (b >> 1) & mr
+		l2 := (l1 << 1) & ml
+		r2 := (r1 >> 1) & mr
+		l |= e & (r1&r2 | l1&r1 | l2&l1)
+		l3 := (l2 << 1) & ml
+		r3 := (r2 >> 1) & mr
+		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
 	}
+
+	// Direction 1: Vertical (s=8)
+	{
+		ml, mr := masksL[1], masksR[1]
+		l1 := (b << 8) & ml
+		r1 := (b >> 8) & mr
+		l2 := (l1 << 8) & ml
+		r2 := (r1 >> 8) & mr
+		l |= e & (r1&r2 | l1&r1 | l2&l1)
+		l3 := (l2 << 8) & ml
+		r3 := (r2 >> 8) & mr
+		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
+	}
+
+	// Direction 2: Diagonal (s=9)
+	{
+		ml, mr := masksL[2], masksR[2]
+		l1 := (b << 9) & ml
+		r1 := (b >> 9) & mr
+		l2 := (l1 << 9) & ml
+		r2 := (r1 >> 9) & mr
+		l |= e & (r1&r2 | l1&r1 | l2&l1)
+		l3 := (l2 << 9) & ml
+		r3 := (r2 >> 9) & mr
+		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
+	}
+
+	// Direction 3: Anti-diagonal (s=7)
+	{
+		ml, mr := masksL[3], masksR[3]
+		l1 := (b << 7) & ml
+		r1 := (b >> 7) & mr
+		l2 := (l1 << 7) & ml
+		r2 := (r1 >> 7) & mr
+		l |= e & (r1&r2 | l1&r1 | l2&l1)
+		l3 := (l2 << 7) & ml
+		r3 := (r2 >> 7) & mr
+		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
+	}
+
 	return Bitboard(w), Bitboard(l)
 }
 func GetForcedMoves(board Board, currentPID, nextPID int) Bitboard {
@@ -173,20 +207,21 @@ func GetForcedMoves(board Board, currentPID, nextPID int) Bitboard {
 }
 
 func GetBestMoves(board Board, currentPID, nextPID int) Bitboard {
-	forced := GetForcedMoves(board, currentPID, nextPID)
-	if forced != 0 {
-		return forced
+	empty := ^board.Occupied
+	myWins, myLoses := GetWinsAndLoses(board.GetPlayerBoard(currentPID), empty)
+	if myWins != 0 {
+		return myWins
 	}
 
-	empty := ^board.Occupied
-	_, myLoses := GetWinsAndLoses(board.GetPlayerBoard(currentPID), empty)
+	nextWins, _ := GetWinsAndLoses(board.GetPlayerBoard(nextPID), empty)
+	if nextWins != 0 {
+		return nextWins
+	}
 
 	safeMoves := empty & ^myLoses
 	if safeMoves != 0 {
 		return safeMoves
 	}
-
-	// If no safe moves, must make a losing move. Any empty square is fine.
 	return empty
 }
 
@@ -600,10 +635,11 @@ type State struct {
 func SimulateStep(board Board, activeMask uint8, currentID int, move Move) State {
 	newBoard := board
 	newBoard.Set(move.ToIndex(), currentID)
-	if CheckWin(newBoard.GetPlayerBoard(currentID)) {
+	isWin, isLoss := CheckBoard(newBoard.GetPlayerBoard(currentID))
+	if isWin {
 		return State{board: newBoard, nextPlayerID: -1, activeMask: activeMask, winnerID: currentID}
 	}
-	if CheckLose(newBoard.GetPlayerBoard(currentID)) {
+	if isLoss {
 		newMask := activeMask & ^(1 << uint(currentID))
 		if bits.OnesCount8(newMask) == 1 {
 			winnerID := bits.TrailingZeros8(newMask)
@@ -726,12 +762,13 @@ func (g *SquavaGame) Run() {
 			move = currentPlayer.GetMove(g.board, forcedMoves)
 		}
 		g.board.Set(move.ToIndex(), currentPlayer.ID())
-		if CheckWin(g.board.GetPlayerBoard(currentPlayer.ID())) {
+		isWin, isLoss := CheckBoard(g.board.GetPlayerBoard(currentPlayer.ID()))
+		if isWin {
 			g.PrintBoard()
 			fmt.Printf("!!! %s wins with 4 in a row! !!!\n", currentPlayer.Name())
 			return
 		}
-		if CheckLose(g.board.GetPlayerBoard(currentPlayer.ID())) {
+		if isLoss {
 			fmt.Printf("Oops! %s made 3 in a row and is eliminated!\n", currentPlayer.Name())
 			g.players = append(g.players[:g.turnIdx], g.players[g.turnIdx+1:]...)
 			if g.turnIdx >= len(g.players) {
@@ -759,6 +796,7 @@ func main() {
 	iterations := flag.Int("iterations", 1000, "MCTS iterations")
 	cpuProfile := flag.String("cpuprofile", "", "write cpu profile to file")
 	flag.Parse()
+
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
 		if err != nil {
