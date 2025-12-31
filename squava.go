@@ -15,6 +15,24 @@ import (
 	"weak"
 )
 
+// --- Faster random number generation (xorshift64*) ---
+var xorState uint64 = 1 // seed should be non-zero
+
+func xrand() uint64 {
+	xorState ^= xorState >> 12
+	xorState ^= xorState << 25
+	xorState ^= xorState >> 27
+	return xorState * 0x2545F4914F6CDD1D
+}
+
+func randIntn(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	// This is biased, but fast. For MCTS rollouts, it's an acceptable trade-off.
+	return int(xrand() % uint64(n))
+}
+
 var (
 	zobristP      [3][64]uint64
 	zobristTurn   [3]uint64
@@ -148,23 +166,24 @@ func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 		r1 := (b >> 1) & mr
 		l2 := (l1 << 1) & ml
 		r2 := (r1 >> 1) & mr
-		l |= e & (r1&r2 | l1&r1 | l2&l1)
-		l3 := (l2 << 1) & ml
-		r3 := (r2 >> 1) & mr
-		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
+		A := r1 & r2
+		B := l1 & r1
+		C := l1 & l2
+		l |= e & (A | B | C)
+		w |= e & (A&(r2>>1&mr) | A&l1 | C&r1 | C&(l2<<1&ml))
 	}
 
 	// Direction 1: Vertical (s=8)
 	{
-		ml, mr := masksL[1], masksR[1]
-		l1 := (b << 8) & ml
-		r1 := (b >> 8) & mr
-		l2 := (l1 << 8) & ml
-		r2 := (r1 >> 8) & mr
-		l |= e & (r1&r2 | l1&r1 | l2&l1)
-		l3 := (l2 << 8) & ml
-		r3 := (r2 >> 8) & mr
-		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
+		l1 := (b << 8)
+		r1 := (b >> 8)
+		l2 := (l1 << 8)
+		r2 := (r1 >> 8)
+		A := r1 & r2
+		B := l1 & r1
+		C := l1 & l2
+		l |= e & (A | B | C)
+		w |= e & (A&(r2>>8) | A&l1 | C&r1 | C&(l2<<8))
 	}
 
 	// Direction 2: Diagonal (s=9)
@@ -174,10 +193,11 @@ func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 		r1 := (b >> 9) & mr
 		l2 := (l1 << 9) & ml
 		r2 := (r1 >> 9) & mr
-		l |= e & (r1&r2 | l1&r1 | l2&l1)
-		l3 := (l2 << 9) & ml
-		r3 := (r2 >> 9) & mr
-		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
+		A := r1 & r2
+		B := l1 & r1
+		C := l1 & l2
+		l |= e & (A | B | C)
+		w |= e & (A&(r2>>9&mr) | A&l1 | C&r1 | C&(l2<<9&ml))
 	}
 
 	// Direction 3: Anti-diagonal (s=7)
@@ -187,10 +207,11 @@ func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 		r1 := (b >> 7) & mr
 		l2 := (l1 << 7) & ml
 		r2 := (r1 >> 7) & mr
-		l |= e & (r1&r2 | l1&r1 | l2&l1)
-		l3 := (l2 << 7) & ml
-		r3 := (r2 >> 7) & mr
-		w |= e & (r1&r2&r3 | l1&r1&r2 | l2&l1&r1 | l3&l2&l1)
+		A := r1 & r2
+		B := l1 & r1
+		C := l1 & l2
+		l |= e & (A | B | C)
+		w |= e & (A&(r2>>7&mr) | A&l1 | C&r1 | C&(l2<<7&ml))
 	}
 
 	return Bitboard(w), Bitboard(l)
@@ -313,14 +334,32 @@ func isValidCoord(r, c int) bool {
 var invSqrtTable [1000001]float64
 var coeffTable [1000001]float64
 
+var nextPlayerTable [3][256]int8
+
 func init() {
 	initZobrist()
+	for p := 0; p < 3; p++ {
+		for m := 0; m < 256; m++ {
+			nextPlayerTable[p][m] = -1
+			for i := 1; i <= 2; i++ {
+				next := (p + i) % 3
+				if (m & (1 << uint(next))) != 0 {
+					nextPlayerTable[p][m] = int8(next)
+					break
+				}
+			}
+		}
+	}
 	for i := 1; i < len(invSqrtTable); i++ {
 		invSqrtTable[i] = 1.0 / math.Sqrt(float64(i))
 	}
 	for i := 1; i < len(coeffTable); i++ {
 		coeffTable[i] = 2.0 * math.Sqrt(math.Log(float64(i)))
 	}
+}
+
+func getNextPlayer(currentID int, activeMask uint8) int {
+	return int(nextPlayerTable[currentID][activeMask])
 }
 
 // --- MCTS Player ---
@@ -403,6 +442,10 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, players []int, turnIdx int)
 		root = NewMCGSNode(board, players[turnIdx], activeMask)
 		m.tt[idx] = TTEntry{hash: rootHash, ptr: weak.Make(root)}
 	}
+
+	startRollouts := root.N
+	startTime := time.Now()
+
 	for root.N < m.iterations {
 		path := m.Select(root)
 		leaf := path[len(path)-1].Node
@@ -410,7 +453,7 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, players []int, turnIdx int)
 		var result [3]float64
 		if leaf.untriedMoves != 0 {
 			count := bits.OnesCount64(uint64(leaf.untriedMoves))
-			pick := rand.Intn(count)
+			pick := randIntn(count)
 			temp := uint64(leaf.untriedMoves)
 			for j := 0; j < pick; j++ {
 				temp &= temp - 1
@@ -464,6 +507,14 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, players []int, turnIdx int)
 		// Backprop
 		m.Backprop(path, result)
 	}
+
+	elapsed := time.Since(startTime)
+	totalRollouts := root.N - startRollouts
+	if elapsed.Seconds() > 0 {
+		rolloutsPerSec := float64(totalRollouts) / elapsed.Seconds()
+		fmt.Printf("Rollouts: %d, Time: %v, RPS: %.2f\n", totalRollouts, elapsed, rolloutsPerSec)
+	}
+
 	// Stats and Selection
 	myID := players[turnIdx]
 	fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
@@ -533,10 +584,11 @@ func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
 		bestScore := math.Inf(-1)
 		bestEdgeIdx := -1
 		c := current.UCB1Coeff
-		for i := range current.Edges {
-			edge := &current.Edges[i]
-			var u float64
+		edges := current.Edges
+		for i := range edges {
+			edge := &edges[i]
 			vPlus1 := edge.Visits + 1
+			var u float64
 			if vPlus1 < len(invSqrtTable) {
 				u = c * invSqrtTable[vPlus1]
 			} else {
@@ -551,7 +603,7 @@ func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
 		if bestEdgeIdx == -1 {
 			break
 		}
-		bestEdge := &current.Edges[bestEdgeIdx]
+		bestEdge := &edges[bestEdgeIdx]
 		m.path = append(m.path, PathStep{Node: bestEdge.Dest, EdgeIdx: bestEdgeIdx})
 		current = bestEdge.Dest
 	}
@@ -611,15 +663,7 @@ func NewMCGSNode(board Board, playerToMoveID int, activeMask uint8) *MCGSNode {
 	node.untriedMoves = node.GetPossibleMoves()
 	return node
 }
-func getNextPlayer(currentID int, activeMask uint8) int {
-	for i := 1; i <= 2; i++ {
-		next := (currentID + i) % 3
-		if (activeMask & (1 << uint(next))) != 0 {
-			return next
-		}
-	}
-	return -1
-}
+
 func (n *MCGSNode) Matches(board Board, playerToMoveID int, activeMask uint8) bool {
 	return n.board == board && n.playerToMoveID == playerToMoveID && n.activeMask == activeMask
 }
@@ -671,40 +715,71 @@ func RunSimulation(board Board, activeMask uint8, currentID int) [3]float64 {
 	simMask := activeMask
 	curr := currentID
 	for {
-		if bits.OnesCount8(simMask) == 1 {
+		if simMask&(simMask-1) == 0 {
 			var res [3]float64
 			res[bits.TrailingZeros8(simMask)] = 1.0
 			return res
 		}
 
 		nextP := getNextPlayer(curr, simMask)
-		threats := AnalyzeThreats(simBoard, curr, nextP)
-		movesBitboard := GetBestMoves(simBoard, threats)
+		empty := ^simBoard.Occupied
+		myWins, myLoses := GetWinsAndLoses(simBoard.GetPlayerBoard(curr), empty)
 
-		if movesBitboard == 0 {
-			return [3]float64{} // Draw
-		}
-
-		count := bits.OnesCount64(uint64(movesBitboard))
-		pick := rand.Intn(count)
-		temp := uint64(movesBitboard)
-		for i := 0; i < pick; i++ {
-			temp &= temp - 1
-		}
-		selectedIdx := bits.TrailingZeros64(temp)
-
-		state := SimulateStep(simBoard, simMask, curr, MoveFromIndex(selectedIdx))
-		if state.winnerID != -1 {
+		if myWins != 0 {
 			var res [3]float64
-			res[state.winnerID] = 1.0
+			res[curr] = 1.0
 			return res
 		}
-		simBoard = state.board
-		simMask = state.activeMask
-		curr = state.nextPlayerID
-		if curr == -1 {
-			return [3]float64{} // Draw
+
+		nextWins, _ := GetWinsAndLoses(simBoard.GetPlayerBoard(nextP), empty)
+
+		var moves Bitboard
+		mustCheckLoss := true
+		if nextWins != 0 {
+			moves = nextWins
+		} else {
+			moves = empty & ^myLoses
+			if moves != 0 {
+				mustCheckLoss = false
+			} else {
+				moves = empty
+			}
 		}
+
+		if moves == 0 {
+			return [3]float64{}
+		}
+
+		var selectedIdx int
+		count := bits.OnesCount64(uint64(moves))
+		if count == 1 {
+			selectedIdx = bits.TrailingZeros64(uint64(moves))
+		} else {
+			pick := randIntn(count)
+			temp := uint64(moves)
+			for i := 0; i < pick; i++ {
+				temp &= temp - 1
+			}
+			selectedIdx = bits.TrailingZeros64(temp)
+		}
+
+		simBoard.Set(selectedIdx, curr)
+
+		if mustCheckLoss {
+			_, isLoss := CheckBoard(simBoard.GetPlayerBoard(curr))
+			if isLoss {
+				simMask &= ^(1 << uint(curr))
+				if simMask&(simMask-1) == 0 {
+					var res [3]float64
+					res[bits.TrailingZeros8(simMask)] = 1.0
+					return res
+				}
+				curr = getNextPlayer(curr, simMask)
+				continue
+			}
+		}
+
+		curr = nextP
 	}
 }
 
@@ -826,7 +901,10 @@ func main() {
 		}
 		defer pprof.StopCPUProfile()
 	}
-	rand.Seed(time.Now().UnixNano())
+	xorState = uint64(time.Now().UnixNano())
+	if xorState == 0 {
+		xorState = 1
+	}
 	game := NewSquavaGame()
 	createPlayer := func(t, name, symbol string, id int) Player {
 		if t == "mcts" {
