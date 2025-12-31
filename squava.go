@@ -195,30 +195,43 @@ func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 
 	return Bitboard(w), Bitboard(l)
 }
-func GetForcedMoves(board Board, currentPID, nextPID int) Bitboard {
-	empty := ^board.Occupied
-	myWins, _ := GetWinsAndLoses(board.GetPlayerBoard(currentPID), empty)
-	if myWins != 0 {
-		return myWins
-	}
-
-	nextWins, _ := GetWinsAndLoses(board.GetPlayerBoard(nextPID), empty)
-	return nextWins
+// ThreatAnalysis holds pre-calculated win/loss bitboards for a given turn.
+type ThreatAnalysis struct {
+	MyWins   Bitboard
+	MyLoses  Bitboard
+	NextWins Bitboard
 }
 
-func GetBestMoves(board Board, currentPID, nextPID int) Bitboard {
+// AnalyzeThreats calculates the immediate win/loss threats for the current and next player.
+func AnalyzeThreats(board Board, currentPID, nextPID int) ThreatAnalysis {
 	empty := ^board.Occupied
 	myWins, myLoses := GetWinsAndLoses(board.GetPlayerBoard(currentPID), empty)
-	if myWins != 0 {
-		return myWins
-	}
-
 	nextWins, _ := GetWinsAndLoses(board.GetPlayerBoard(nextPID), empty)
-	if nextWins != 0 {
-		return nextWins
+	return ThreatAnalysis{
+		MyWins:   myWins,
+		MyLoses:  myLoses,
+		NextWins: nextWins,
+	}
+}
+
+func GetForcedMoves(board Board, currentPID, nextPID int) Bitboard {
+	threats := AnalyzeThreats(board, currentPID, nextPID)
+	if threats.MyWins != 0 {
+		return threats.MyWins
+	}
+	return threats.NextWins
+}
+
+func GetBestMoves(board Board, threats ThreatAnalysis) Bitboard {
+	if threats.MyWins != 0 {
+		return threats.MyWins
+	}
+	if threats.NextWins != 0 {
+		return threats.NextWins
 	}
 
-	safeMoves := empty & ^myLoses
+	empty := ^board.Occupied
+	safeMoves := empty & ^threats.MyLoses
 	if safeMoves != 0 {
 		return safeMoves
 	}
@@ -491,7 +504,8 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, players []int, turnIdx int)
 	if bestVisits == -1 {
 		// Fallback
 		nextID := getNextPlayer(players[turnIdx], activeMask)
-		moves := GetBestMoves(board, players[turnIdx], nextID)
+		threats := AnalyzeThreats(board, players[turnIdx], nextID)
+		moves := GetBestMoves(board, threats)
 		if moves != 0 {
 			idx := bits.TrailingZeros64(uint64(moves))
 			return MoveFromIndex(idx)
@@ -621,7 +635,8 @@ func (n *MCGSNode) GetPossibleMoves() Bitboard {
 		return 0
 	}
 	nextID := getNextPlayer(n.playerToMoveID, n.activeMask)
-	return GetBestMoves(n.board, n.playerToMoveID, nextID)
+	threats := AnalyzeThreats(n.board, n.playerToMoveID, nextID)
+	return GetBestMoves(n.board, threats)
 }
 
 type State struct {
@@ -663,7 +678,8 @@ func RunSimulation(board Board, activeMask uint8, currentID int) [3]float64 {
 		}
 
 		nextP := getNextPlayer(curr, simMask)
-		movesBitboard := GetBestMoves(simBoard, curr, nextP)
+		threats := AnalyzeThreats(simBoard, curr, nextP)
+		movesBitboard := GetBestMoves(simBoard, threats)
 
 		if movesBitboard == 0 {
 			return [3]float64{} // Draw
