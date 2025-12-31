@@ -420,7 +420,6 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 		m.Backprop(path, result)
 	}
 	// Stats and Selection
-	fmt.Printf("MCGS Stats: %d persistent entries. Root visits: %d/%d.\n", len(m.tt), root.N, m.iterations)
 	myID := players[turnIdx]
 	fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
 	bestVisits := -1
@@ -472,11 +471,6 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 	return bestMove
 }
 
-type BoardHash struct {
-	P1, P2, P3     Bitboard
-	PlayerToMoveID int
-	ActiveMask     uint8
-}
 type PathStep struct {
 	Node    *MCGSNode
 	EdgeIdx int // Index in the parent's Edges slice
@@ -585,10 +579,6 @@ func getNextPlayer(currentID int, activeMask uint8) int {
 }
 func (n *MCGSNode) Matches(board Board, playerToMoveID int, activeMask uint8) bool {
 	return n.board == board && n.playerToMoveID == playerToMoveID && n.activeMask == activeMask
-}
-
-func (n *MCGSNode) Zobrist() uint64 {
-	return ZobristHash(n.board, n.playerToMoveID, n.activeMask)
 }
 
 func (n *MCGSNode) GetPossibleMoves() Bitboard {
