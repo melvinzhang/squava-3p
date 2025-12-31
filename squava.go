@@ -154,10 +154,6 @@ func CheckLose(bb Bitboard) bool {
 	}
 	return false
 }
-func GetWinningMoves(board Board, pID int) Bitboard {
-	w, _ := GetWinsAndLoses(board.GetPlayerBoard(pID), ^board.Occupied)
-	return w
-}
 func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
 	b := uint64(bb)
 	e := uint64(empty)
@@ -184,10 +180,34 @@ func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard
 	}
 	return Bitboard(w), Bitboard(l)
 }
-func GetValidMoves(board Board, currentPID, nextPID int) Bitboard {
-	threats := GetWinningMoves(board, nextPID)
-	myWins := GetWinningMoves(board, currentPID)
-	return threats | myWins
+func GetForcedMoves(board Board, currentPID, nextPID int) Bitboard {
+	empty := ^board.Occupied
+	myWins, _ := GetWinsAndLoses(board.GetPlayerBoard(currentPID), empty)
+	if myWins != 0 {
+		return myWins
+	}
+
+	nextWins, _ := GetWinsAndLoses(board.GetPlayerBoard(nextPID), empty)
+	return nextWins
+}
+
+func GetBestMoves(board Board, currentPID, nextPID int) Bitboard {
+	forced := GetForcedMoves(board, currentPID, nextPID)
+	if forced != 0 {
+		return forced
+	}
+
+	empty := ^board.Occupied
+	_, myLoses := GetWinsAndLoses(board.GetPlayerBoard(currentPID), empty)
+
+	targets := empty & ^myLoses
+	if targets == 0 {
+		targets = empty & myLoses
+	}
+	if targets == 0 {
+		targets = empty
+	}
+	return targets
 }
 
 // --- Human Player ---
@@ -354,9 +374,6 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 	if root == nil {
 		root = NewMCGSNode(board, players[turnIdx], activeMask)
 		m.tt[idx] = TTEntry{hash: rootHash, ptr: weak.Make(root)}
-	}
-	if forcedMoves != 0 {
-		root.untriedMoves = forcedMoves
 	}
 	for root.N < m.iterations {
 		path := m.Select(root)
@@ -592,23 +609,7 @@ func (n *MCGSNode) GetPossibleMoves() Bitboard {
 		return 0
 	}
 	nextID := getNextPlayer(n.playerToMoveID, n.activeMask)
-	empty := ^n.board.Occupied
-	myBB := n.board.GetPlayerBoard(n.playerToMoveID)
-	nextBB := n.board.GetPlayerBoard(nextID)
-	myWins, myLoses := GetWinsAndLoses(myBB, empty)
-	nextWins, _ := GetWinsAndLoses(nextBB, empty)
-	forced := nextWins | myWins
-	if forced != 0 {
-		return forced
-	}
-	targets := (empty & ^myLoses) | myWins
-	if targets == 0 {
-		targets = empty & myLoses & ^myWins
-	}
-	if targets == 0 {
-		targets = empty
-	}
-	return targets
+	return GetBestMoves(n.board, n.playerToMoveID, nextID)
 }
 
 type State struct {
@@ -640,14 +641,6 @@ func SimulateStep(board Board, activeMask uint8, currentID int, move Move) State
 func RunSimulation(board Board, activeMask uint8, currentID int) [3]float64 {
 	simBoard := board
 	simMask := activeMask
-	// Initial threat state
-	var wins [3]Bitboard
-	empty := ^simBoard.Occupied
-	for pID := 0; pID < 3; pID++ {
-		if (simMask & (1 << uint(pID))) != 0 {
-			wins[pID], _ = GetWinsAndLoses(simBoard.GetPlayerBoard(pID), empty)
-		}
-	}
 	curr := currentID
 	for {
 		if bits.OnesCount8(simMask) == 1 {
@@ -655,66 +648,33 @@ func RunSimulation(board Board, activeMask uint8, currentID int) [3]float64 {
 			res[bits.TrailingZeros8(simMask)] = 1.0
 			return res
 		}
+
 		nextP := getNextPlayer(curr, simMask)
-		myBB := simBoard.GetPlayerBoard(curr)
-		myWins, myLoses := GetWinsAndLoses(myBB, empty)
-		wins[curr] = myWins // Update my threats since I might have new ones
-		threats := wins[nextP]
-		var movesBitboard Bitboard
-		if threats != 0 || myWins != 0 {
-			candidates := threats | myWins
-			safeCandidates := (candidates & ^myLoses) | (candidates & myWins)
-			if safeCandidates != 0 {
-				movesBitboard = safeCandidates
-			} else {
-				movesBitboard = candidates
-			}
-		} else {
-			safeMoves := (empty & ^myLoses) | myWins
-			if safeMoves != 0 {
-				movesBitboard = safeMoves
-			} else {
-				movesBitboard = empty & myLoses & ^myWins
-			}
-		}
+		movesBitboard := GetBestMoves(simBoard, curr, nextP)
+
 		if movesBitboard == 0 {
 			return [3]float64{} // Draw
 		}
+
 		count := bits.OnesCount64(uint64(movesBitboard))
-		if count == 0 {
-			return [3]float64{}
-		}
 		pick := rand.Intn(count)
-		var selectedIdx int
 		temp := uint64(movesBitboard)
 		for i := 0; i < pick; i++ {
 			temp &= temp - 1
 		}
-		selectedIdx = bits.TrailingZeros64(temp)
-		simBoard.Set(selectedIdx, curr)
-		mask := Bitboard(1) << selectedIdx
-		isWin := (myWins & mask) != 0
-		isLose := (myLoses & mask) != 0
-		empty &= ^mask
-		// Incremental update: Clear the blocked square from everyone's threats
-		for i := range wins {
-			wins[i] &= ^mask
-		}
-		if isWin {
+		selectedIdx := bits.TrailingZeros64(temp)
+
+		state := SimulateStep(simBoard, simMask, curr, MoveFromIndex(selectedIdx))
+		if state.winnerID != -1 {
 			var res [3]float64
-			res[curr] = 1.0
+			res[state.winnerID] = 1.0
 			return res
 		}
-		if isLose {
-			simMask &= ^(1 << uint(curr))
-			if bits.OnesCount8(simMask) == 1 {
-				var res [3]float64
-				res[bits.TrailingZeros8(simMask)] = 1.0
-				return res
-			}
-			curr = getNextPlayer(curr, simMask)
-		} else {
-			curr = getNextPlayer(curr, simMask)
+		simBoard = state.board
+		simMask = state.activeMask
+		curr = state.nextPlayerID
+		if curr == -1 {
+			return [3]float64{} // Draw
 		}
 	}
 }
@@ -772,8 +732,9 @@ func (g *SquavaGame) Run() {
 		currentPlayer := g.players[g.turnIdx]
 		nextPlayerIdx := (g.turnIdx + 1) % len(g.players)
 		nextPlayer := g.players[nextPlayerIdx]
+
 		fmt.Printf("Turn: %s (%s)\n", currentPlayer.Name(), currentPlayer.Symbol())
-		forcedMoves := GetValidMoves(g.board, currentPlayer.ID(), nextPlayer.ID())
+		forcedMoves := GetForcedMoves(g.board, currentPlayer.ID(), nextPlayer.ID())
 		var move Move
 		if mcts, ok := currentPlayer.(*MCTSPlayer); ok {
 			fmt.Printf("%s is thinking...\n", currentPlayer.Name())
