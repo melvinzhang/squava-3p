@@ -12,7 +12,27 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"weak"
 )
+
+var (
+	zobristP      [3][64]uint64
+	zobristTurn   [3]uint64
+	zobristActive [256]uint64
+)
+
+func initZobrist() {
+	r := rand.New(rand.NewSource(42))
+	for p := 0; p < 3; p++ {
+		for i := 0; i < 64; i++ {
+			zobristP[p][i] = r.Uint64()
+		}
+		zobristTurn[p] = r.Uint64()
+	}
+	for i := 0; i < 256; i++ {
+		zobristActive[i] = r.Uint64()
+	}
+}
 
 const (
 	BoardSize = 8
@@ -246,6 +266,7 @@ var invSqrtTable [1000001]float64
 var coeffTable [1000001]float64
 
 func init() {
+	initZobrist()
 	for i := 1; i < len(invSqrtTable); i++ {
 		invSqrtTable[i] = 1.0 / math.Sqrt(float64(i))
 	}
@@ -255,10 +276,18 @@ func init() {
 }
 
 // --- MCTS Player ---
+const TTSize = 1 << 20 // 1M entries
+const TTMask = TTSize - 1
+
+type TTEntry struct {
+	hash uint64
+	ptr  weak.Pointer[MCGSNode]
+}
+
 type MCTSPlayer struct {
 	info       PlayerInfo
 	iterations int
-	tt         map[BoardHash]*MCGSNode
+	tt         []TTEntry
 	path       []PathStep
 }
 
@@ -266,7 +295,7 @@ func NewMCTSPlayer(name, symbol string, id int, iterations int) *MCTSPlayer {
 	return &MCTSPlayer{
 		info:       PlayerInfo{name: name, symbol: symbol, id: id},
 		iterations: iterations,
-		tt:         make(map[BoardHash]*MCGSNode),
+		tt:         make([]TTEntry, TTSize),
 		path:       make([]PathStep, 0, 64),
 	}
 }
@@ -276,19 +305,55 @@ func (m *MCTSPlayer) ID() int        { return m.info.id }
 func (m *MCTSPlayer) GetMove(board Board, forcedMoves Bitboard) Move {
 	return Move{0, 0}
 }
+func ZobristHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
+	var h uint64
+	if playerToMoveID >= 0 && playerToMoveID < 3 {
+		h = zobristTurn[playerToMoveID]
+	}
+	h ^= zobristActive[activeMask]
+	p1 := uint64(board.P1)
+	for p1 != 0 {
+		idx := bits.TrailingZeros64(p1)
+		h ^= zobristP[0][idx]
+		p1 &= p1 - 1
+	}
+	p2 := uint64(board.P2)
+	for p2 != 0 {
+		idx := bits.TrailingZeros64(p2)
+		h ^= zobristP[1][idx]
+		p2 &= p2 - 1
+	}
+	p3 := uint64(board.P3)
+	for p3 != 0 {
+		idx := bits.TrailingZeros64(p3)
+		h ^= zobristP[2][idx]
+		p3 &= p3 - 1
+	}
+	return h
+}
+
 func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, players []int, turnIdx int) Move {
 	if m.tt == nil {
-		m.tt = make(map[BoardHash]*MCGSNode)
+		m.tt = make([]TTEntry, TTSize)
 	}
+
 	activeMask := uint8(0)
 	for _, pID := range players {
 		activeMask |= 1 << uint(pID)
 	}
-	rootHash := BoardHash{board.P1, board.P2, board.P3, players[turnIdx], activeMask}
-	root, ok := m.tt[rootHash]
-	if !ok {
+	rootHash := ZobristHash(board, players[turnIdx], activeMask)
+	idx := int(rootHash & TTMask)
+	var root *MCGSNode
+	if entry := m.tt[idx]; entry.hash == rootHash {
+		candidate := entry.ptr.Value()
+		if candidate != nil && candidate.Matches(board, players[turnIdx], activeMask) {
+			root = candidate
+		}
+	}
+
+	if root == nil {
 		root = NewMCGSNode(board, players[turnIdx], activeMask)
-		m.tt[rootHash] = root
+		m.tt[idx] = TTEntry{hash: rootHash, ptr: weak.Make(root)}
 	}
 	if forcedMoves != 0 {
 		root.untriedMoves = forcedMoves
@@ -311,15 +376,23 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 			leaf.untriedMoves &= Bitboard(^(uint64(1) << idx))
 			// Calc next state
 			state := SimulateStep(leaf.board, leaf.activeMask, leaf.playerToMoveID, move)
-			hash := BoardHash{state.board.P1, state.board.P2, state.board.P3, state.nextPlayerID, state.activeMask}
+			hash := ZobristHash(state.board, state.nextPlayerID, state.activeMask)
+			ttIdx := int(hash & TTMask)
 			var nextNode *MCGSNode
-			if existing, ok := m.tt[hash]; ok {
-				nextNode = existing
+			if entry := m.tt[ttIdx]; entry.hash == hash {
+				candidate := entry.ptr.Value()
+				if candidate != nil && candidate.Matches(state.board, state.nextPlayerID, state.activeMask) {
+					nextNode = candidate
+				}
+			}
+
+			if nextNode != nil {
 				result = nextNode.Q // Use existing node's Q for backprop
 			} else {
 				nextNode = NewMCGSNode(state.board, state.nextPlayerID, state.activeMask)
 				nextNode.winnerID = state.winnerID
-				m.tt[hash] = nextNode
+				m.tt[ttIdx] = TTEntry{hash: hash, ptr: weak.Make(nextNode)}
+
 				// Rollout ONLY for new nodes
 				if nextNode.winnerID != -1 {
 					result[nextNode.winnerID] = 1.0
@@ -347,7 +420,7 @@ func (m *MCTSPlayer) GetMoveWithContext(board Board, forcedMoves Bitboard, playe
 		m.Backprop(path, result)
 	}
 	// Stats and Selection
-	fmt.Printf("MCGS Stats: %d persistent nodes. Root visits: %d/%d. Reuse Ratio: %.2f\n", len(m.tt), root.N, m.iterations, float64(root.N)/float64(len(m.tt)))
+	fmt.Printf("MCGS Stats: %d persistent entries. Root visits: %d/%d.\n", len(m.tt), root.N, m.iterations)
 	myID := players[turnIdx]
 	fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
 	bestVisits := -1
@@ -510,6 +583,14 @@ func getNextPlayer(currentID int, activeMask uint8) int {
 	}
 	return -1
 }
+func (n *MCGSNode) Matches(board Board, playerToMoveID int, activeMask uint8) bool {
+	return n.board == board && n.playerToMoveID == playerToMoveID && n.activeMask == activeMask
+}
+
+func (n *MCGSNode) Zobrist() uint64 {
+	return ZobristHash(n.board, n.playerToMoveID, n.activeMask)
+}
+
 func (n *MCGSNode) GetPossibleMoves() Bitboard {
 	if n.winnerID != -1 {
 		return 0
