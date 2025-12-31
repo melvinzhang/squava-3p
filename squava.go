@@ -76,7 +76,7 @@ type Board struct {
 }
 type Bitboard uint64
 type Player interface {
-	GetMove(board Board, forcedMoves Bitboard) Move
+	GetMove(board Board, players []int, turnIdx int) Move
 	Name() string
 	Symbol() string
 	ID() int // 0, 1, 2
@@ -126,35 +126,29 @@ func (b *Board) GetPlayerBoard(pID int) Bitboard {
 	}
 	return 0
 }
+func hasNInARow(b uint64, n int) bool {
+	for i := 0; i < 4; i++ {
+		s := shifts[i]
+		m := masksL[i]
+		temp := b
+		for j := 1; j < n; j++ {
+			temp &= (temp << s) & m
+		}
+		if temp != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 	b := uint64(bb)
-	var h, v, d1, d2 uint64
+	isWin = hasNInARow(b, 4)
+	isLoss = !isWin && hasNInARow(b, 3)
+	return
+}
 
-	// Horizontal
-	h = b & (b >> 1)
-	// Vertical
-	v = b & (b >> 8)
-	// Diagonal
-	d1 = b & (b >> 9)
-	// Anti-diagonal
-	d2 = b & (b >> 7)
-
-	// A win is 4-in-a-row, which implies two adjacent pairs.
-	// A loss is 3-in-a-row, which implies one pair and an adjacent piece.
-	isWin = ((h & (h >> 2)) & 0xFCFCFCFCFCFCFCFC) != 0 || // H
-		(v & (v >> 16)) != 0 || // V
-		((d1 & (d1 >> 18)) & 0xFCFCFCFCFCFCFCFC) != 0 || // D1
-				((d2 & (d2 >> 14)) & 0x7F7F7F7F7F7F7F7F) != 0 // D2
-		
-			isLoss = !isWin && (((h & (h >> 1)) & 0xFDFDFDFDFDFDFDFD) != 0 || // H
-				(v & (v >> 8)) != 0 || // V
-				((d1 & (d1 >> 9)) & 0xFEFEFEFEFEFEFEFE) != 0 || // D1
-				((d2 & (d2 >> 7)) & 0x7F7F7F7F7F7F7F7F) != 0) // D2
-		
-			return
-		}
-		
-		func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
+func GetWinsAndLoses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
 	b := uint64(bb)
 	e := uint64(empty)
 	var w, l uint64
@@ -216,6 +210,7 @@ func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 
 	return Bitboard(w), Bitboard(l)
 }
+
 // ThreatAnalysis holds pre-calculated win/loss bitboards for a given turn.
 type ThreatAnalysis struct {
 	MyWins   Bitboard
@@ -270,7 +265,10 @@ func NewHumanPlayer(name, symbol string, id int) *HumanPlayer {
 func (h *HumanPlayer) Name() string   { return h.info.name }
 func (h *HumanPlayer) Symbol() string { return h.info.symbol }
 func (h *HumanPlayer) ID() int        { return h.info.id }
-func (h *HumanPlayer) GetMove(board Board, forcedMoves Bitboard) Move {
+func (h *HumanPlayer) GetMove(board Board, players []int, turnIdx int) Move {
+	nextPlayerIdx := (turnIdx + 1) % len(players)
+	nextPID := players[nextPlayerIdx]
+	forcedMoves := GetForcedMoves(board, h.info.id, nextPID)
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		prompt := fmt.Sprintf("%s (%s), enter your move (e.g., A1): ", h.info.name, h.info.symbol)
@@ -391,9 +389,7 @@ func NewMCTSPlayer(name, symbol string, id int, iterations int) *MCTSPlayer {
 func (m *MCTSPlayer) Name() string   { return m.info.name }
 func (m *MCTSPlayer) Symbol() string { return m.info.symbol }
 func (m *MCTSPlayer) ID() int        { return m.info.id }
-func (m *MCTSPlayer) GetMove(board Board, forcedMoves Bitboard) Move {
-	return Move{0, 0}
-}
+
 func ZobristHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
 	var h uint64
 	if playerToMoveID >= 0 && playerToMoveID < 3 {
@@ -421,7 +417,7 @@ func ZobristHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
 	return h
 }
 
-func (m *MCTSPlayer) GetMoveWithContext(board Board, players []int, turnIdx int) Move {
+func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 	activeMask := uint8(0)
 	for _, pID := range players {
 		activeMask |= 1 << uint(pID)
@@ -844,23 +840,23 @@ func (g *SquavaGame) Run() {
 			break
 		}
 		currentPlayer := g.players[g.turnIdx]
-		nextPlayerIdx := (g.turnIdx + 1) % len(g.players)
-		nextPlayer := g.players[nextPlayerIdx]
 
 		g.PrintBoard()
 		fmt.Printf("Turn: %s (%s)\n", currentPlayer.Name(), currentPlayer.Symbol())
-		var move Move
-		if mcts, ok := currentPlayer.(*MCTSPlayer); ok {
+
+		activeIDs := make([]int, len(g.players))
+		for i, p := range g.players {
+			activeIDs[i] = p.ID()
+		}
+
+		if _, ok := currentPlayer.(*MCTSPlayer); ok {
 			fmt.Printf("%s is thinking...\n", currentPlayer.Name())
-			activeIDs := []int{}
-			for _, p := range g.players {
-				activeIDs = append(activeIDs, p.ID())
-			}
-			move = mcts.GetMoveWithContext(g.board, activeIDs, g.turnIdx)
+		}
+
+		move := currentPlayer.GetMove(g.board, activeIDs, g.turnIdx)
+
+		if _, ok := currentPlayer.(*MCTSPlayer); ok {
 			fmt.Printf("%s chooses %c%d\n", currentPlayer.Name(), move.c+65, move.r+1)
-		} else {
-			forcedMoves := GetForcedMoves(g.board, currentPlayer.ID(), nextPlayer.ID())
-			move = currentPlayer.GetMove(g.board, forcedMoves)
 		}
 		g.board.Set(move.ToIndex(), currentPlayer.ID())
 		isWin, isLoss := CheckBoard(g.board.GetPlayerBoard(currentPlayer.ID()))
