@@ -79,20 +79,20 @@ To analyze the performance of the engine, you can generate a CPU profile and vie
 
 ## Performance Benchmarks
 
-Based on an analysis of 100 games (900,000 iterations per turn):
+Based on an analysis of 100 games (1,000,000 iterations per turn):
 
 ### Win Statistics
-- **Player 1 (X):** 64.0% wins
-- **Player 3 (Z):** 34.0% wins
-- **Player 2 (O):** 1.0% wins
+- **Player 1 (X):** 32.0% wins
+- **Player 2 (O):** 36.0% wins
+- **Player 3 (Z):** 31.0% wins
 - **Draw:** 1.0%
 
 ### Game Dynamics
-- **Average Game Length:** 30.6 moves
-- **Primary Win Method:** Last Standing (97%)
-- **Eliminations:** Player 2 was eliminated most frequently (98 times), followed by Player 3 (65) and Player 1 (35).
+- **Average Game Length:** 40.7 moves
+- **Primary Win Method:** Last Standing (73.0%)
+- **Eliminations:** All players show similar elimination rates (P1: 60, P2: 53, P3: 55), suggesting a balanced risk profile at higher iteration counts.
 
 ### AI Behavior
-- **Average Confidence:** Player 1 maintains the highest average estimated winrate at 53.0%.
-- **Blunder Detection:** The engine detects significant winrate shifts (blunders > 50%), typically occurring when a player is forced into an elimination move (3-in-a-row) or fails to block a deterministic winning sequence.
+- **Average Confidence:** AI players maintain a balanced average estimated winrate (~34%).
+- **Blunder Detection:** The engine detects significant winrate shifts (blunders > 50%), which now occur more frequently in complex mid-game transitions rather than early-game forced moves.
 
