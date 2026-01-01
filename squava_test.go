@@ -749,7 +749,198 @@ func TestMCTSInvariants(t *testing.T) {
 			continue
 		}
 
-		// Validate the resulting graph
-		ValidateMCTSGraph(t, player.root)
-	}
-}
+				// Validate the resulting graph
+
+				ValidateMCTSGraph(t, player.root)
+
+			}
+
+		}
+
+		
+
+		func TestFullGameTerminationFuzz(t *testing.T) {
+
+			for i := 0; i < *fuzzIterations/100; i++ { // Full games are slow, run fewer iterations
+
+				board := Board{}
+
+				activeMask := uint8(0x07)
+
+				currentPID := 0
+
+				players := []int{0, 1, 2}
+
+		
+
+				// Play until termination
+
+				for {
+
+					// 1. Check if game is already over (should not happen mid-loop)
+
+					empty := ^board.Occupied
+
+					if empty == 0 {
+
+						break // Draw
+
+					}
+
+		
+
+					// 2. Select random legal move
+
+					count := bits.OnesCount64(uint64(empty))
+
+					n := int(xrand() % uint64(count))
+
+					idx := SelectBit64(uint64(empty), n)
+
+					
+
+					// 3. Apply move
+
+					board.Set(idx, currentPID)
+
+					
+
+					// 4. Check rules
+
+					isWin, isLoss := CheckBoard(board.P[currentPID])
+
+					if isWin {
+
+						// Current player wins. Verify no one else has a win.
+
+						for _, p := range players {
+
+							if p == currentPID { continue }
+
+							w, _ := CheckBoard(board.P[p])
+
+							if w {
+
+								t.Errorf("Iteration %d: Invalid state. Multiple players have wins.", i)
+
+							}
+
+						}
+
+						goto GameEnd
+
+					}
+
+					if isLoss {
+
+						// Current player eliminated
+
+						activeMask &= ^(1 << uint(currentPID))
+
+						// Remove current player from players slice for turn rotation
+
+						for j, p := range players {
+
+							if p == currentPID {
+
+								players = append(players[:j], players[j+1:]...)
+
+								break
+
+							}
+
+						}
+
+						
+
+						if len(players) == 1 {
+
+							// Last man standing wins
+
+							winner := players[0]
+
+							isW, _ := CheckBoard(board.P[winner])
+
+							// Winner might have a 3-in-a-row (loss) but they win if they are the last one.
+
+							// However, if they have a 4-in-a-row they win anyway.
+
+							// Squava rules: last player wins even if they have 3-in-a-row? 
+
+							// Logic check: if P1 makes 3 and is eliminated, and only P2 left, P2 wins.
+
+							if isW {
+
+								// P2 already had 4? That would be a win earlier.
+
+							}
+
+							goto GameEnd
+
+						}
+
+						
+
+						// Game continues with fewer players. 
+
+						// currentPID is already updated by turn logic below.
+
+					} else {
+
+						// No win or loss, turn rotation handled below
+
+					}
+
+		
+
+					if board.Occupied == Bitboard(Full) {
+
+						goto GameEnd // Draw
+
+					}
+
+		
+
+					// 5. Next Turn
+
+					nextPID := int(nextPlayerTable[currentPID][activeMask])
+
+					if nextPID == -1 {
+
+						t.Errorf("Iteration %d: nextPlayerTable returned -1 for activeMask %02x", i, activeMask)
+
+						goto GameEnd
+
+					}
+
+					currentPID = nextPID
+
+				}
+
+		
+
+			GameEnd:
+
+				// Termination reached. Verify invariants.
+
+				winCount := 0
+
+				for p := 0; p < 3; p++ {
+
+					isW, _ := CheckBoard(board.P[p])
+
+					if isW { winCount++ }
+
+				}
+
+				if winCount > 1 {
+
+					t.Errorf("Iteration %d: Invalid termination. Multiple winners: %d", i, winCount)
+
+				}
+
+			}
+
+		}
+
+		
