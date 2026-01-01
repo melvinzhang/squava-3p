@@ -8,6 +8,18 @@ import (
 
 var fuzzIterations = flag.Int("fuzz_iters", 10000, "Number of iterations for fuzz tests")
 
+func generateRandomBoard(numPieces int) Board {
+	board := Board{}
+	for j := 0; j < numPieces; j++ {
+		idx := int(xrand() % 64)
+		p := int(xrand() % 3)
+		if (board.Occupied & (1 << uint(idx))) == 0 {
+			board.Set(idx, p)
+		}
+	}
+	return board
+}
+
 func TestCheckBoard(t *testing.T) {
 	// A horizontal win at the start of the row (A1, B1, C1, D1)
 	// Bits: 0, 1, 2, 3
@@ -371,14 +383,7 @@ func referenceRunSimulation(board Board, activeMask uint8, currentID int) ([3]fl
 
 func TestRunSimulationRandomized(t *testing.T) {
 	for i := 0; i < *fuzzIterations; i++ {
-		board := Board{}
-		for j := 0; j < 20; j++ {
-			idx := int(xrand() % 64)
-			p := int(xrand() % 3)
-			if (board.Occupied & (1 << uint(idx))) == 0 {
-				board.Set(idx, p)
-			}
-		}
+		board := generateRandomBoard(20)
 		won := false
 		for p := 0; p < 3; p++ {
 			isW, isL := CheckBoard(board.P[p])
@@ -412,15 +417,7 @@ func TestRunSimulationRandomized(t *testing.T) {
 func TestZobristIncrementalFuzz(t *testing.T) {
 	for i := 0; i < *fuzzIterations; i++ {
 		// 1. Generate Random Board
-		board := Board{}
-		// Randomly fill ~1/3 of the board
-		for j := 0; j < 20; j++ {
-			idx := int(xrand() % 64)
-			p := int(xrand() % 3)
-			if (board.Occupied & (1 << uint(idx))) == 0 {
-				board.Set(idx, p)
-			}
-		}
+		board := generateRandomBoard(20)
 
 		// 2. Setup Random Valid Context
 		// Active mask must have at least 2 players
@@ -521,14 +518,7 @@ func TestSelectBit64Fuzz(t *testing.T) {
 func TestHeuristicMoveGenerationFuzz(t *testing.T) {
 	for i := 0; i < *fuzzIterations; i++ {
 		// 1. Generate Random Board
-		board := Board{}
-		for j := 0; j < 25; j++ {
-			idx := int(xrand() % 64)
-			p := int(xrand() % 3)
-			if (board.Occupied & (1 << uint(idx))) == 0 {
-				board.Set(idx, p)
-			}
-		}
+		board := generateRandomBoard(25)
 
 		// Ensure board is clean (no existing wins/losses)
 		clean := true
@@ -733,14 +723,7 @@ func TestMCTSInvariants(t *testing.T) {
 
 	for i := 0; i < fuzzRuns; i++ {
 		// 1. Generate Random Board
-		board := Board{}
-		for j := 0; j < 25; j++ {
-			idx := int(xrand() % 64)
-			p := int(xrand() % 3)
-			if (board.Occupied & (1 << uint(idx))) == 0 {
-				board.Set(idx, p)
-			}
-		}
+		board := generateRandomBoard(25)
 
 		// Ensure board is clean for MCTS start
 		clean := true
