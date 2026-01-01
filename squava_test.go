@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"math"
 	"math/bits"
 	"testing"
 )
@@ -209,18 +210,17 @@ func TestDrawOnFullBoard(t *testing.T) {
 	// Create a board that is almost full
 	board := Board{}
 	// Fill almost everything with a pattern that doesn't create wins/losses
-	// (Not easy in Squava, but for simulation we just care about termination)
 	for i := 0; i < 63; i++ {
 		board.Set(i, (i/2)%3)
 	}
-	// Simulation should terminate with a draw (all zeros) if no moves left
-	// We force a state where no wins/losses are possible in 1 move
+	// Simulation should terminate with a draw if no moves left
 	res, _, _ := RunSimulation(board, 0x07, 0)
-	if res[0] != 0 || res[1] != 0 || res[2] != 0 {
-		// Note: in a random simulation someone might win/lose,
-		// but if we reach moves == 0 it should be [0,0,0]
-		// Let's just check if it returns.
-		t.Logf("Simulation returned %v", res)
+	// Expected draw score for 3 players is 1/3 each
+	expected := 1.0 / 3.0
+	for i := 0; i < 3; i++ {
+		if math.Abs(res[i]-expected) > 1e-9 {
+			t.Errorf("Expected draw score %f for player %d, got %f", expected, i, res[i])
+		}
 	}
 }
 func TestMCTSHeuristic(t *testing.T) {
@@ -313,7 +313,20 @@ func referenceRunSimulation(board Board, activeMask uint8, currentID int) ([3]fl
 			}
 		}
 		if moves == 0 {
-			return [3]float64{}, simBoard
+			var res [3]float64
+			count := bits.OnesCount8(simMask)
+			score := 0.0
+			if count == 3 {
+				score = 1.0 / 3.0
+			} else if count == 2 {
+				score = 0.5
+			}
+			for p := 0; p < 3; p++ {
+				if (simMask & (1 << uint(p))) != 0 {
+					res[p] = score
+				}
+			}
+			return res, simBoard
 		}
 		var selectedIdx int
 		count := bits.OnesCount64(uint64(moves))
