@@ -193,62 +193,6 @@ func GetWinsAndLosses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboar
 	return Bitboard(w), Bitboard(l & ^w)
 }
 
-func GetWins(bb Bitboard, empty Bitboard) Bitboard {
-	b := uint64(bb)
-	e := uint64(empty)
-	var w uint64
-
-	// Horizontal
-	{
-		r1 := (b >> 1) & masksR1[0]
-		l1 := (b << 1) & masksL1[0]
-		r2 := (b >> 2) & masksR2[0]
-		l2 := (b << 2) & masksL2[0]
-		r1r2 := r1 & r2
-		l1l2 := l1 & l2
-		r3 := (b >> 3) & masksR3[0]
-		l3 := (b << 3) & masksL3[0]
-		w |= e & (r1r2&(r3|l1) | l1l2&(r1|l3))
-	}
-	// Vertical
-	{
-		r1 := (b >> 8)
-		l1 := (b << 8)
-		r2 := (b >> 16)
-		l2 := (b << 16)
-		r1r2 := r1 & r2
-		l1l2 := l1 & l2
-		r3 := (b >> 24)
-		l3 := (b << 24)
-		w |= e & (r1r2&(r3|l1) | l1l2&(r1|l3))
-	}
-	// Diagonal
-	{
-		r1 := (b >> 9) & masksR1[2]
-		l1 := (b << 9) & masksL1[2]
-		r2 := (b >> 18) & masksR2[2]
-		l2 := (b << 18) & masksL2[2]
-		r1r2 := r1 & r2
-		l1l2 := l1 & l2
-		r3 := (b >> 27) & masksR3[2]
-		l3 := (b << 27) & masksL3[2]
-		w |= e & (r1r2&(r3|l1) | l1l2&(r1|l3))
-	}
-	// Anti-diagonal
-	{
-		r1 := (b >> 7) & masksR1[3]
-		l1 := (b << 7) & masksL1[3]
-		r2 := (b >> 14) & masksR2[3]
-		l2 := (b << 14) & masksL2[3]
-		r1r2 := r1 & r2
-		l1l2 := l1 & l2
-		r3 := (b >> 21) & masksR3[3]
-		l3 := (b << 21) & masksL3[3]
-		w |= e & (r1r2&(r3|l1) | l1l2&(r1|l3))
-	}
-
-	return Bitboard(w)
-}
 // ThreatAnalysis holds pre-calculated win/loss bitboards for a given turn.
 type ThreatAnalysis struct {
 	MyWins   Bitboard
@@ -519,7 +463,7 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 					result[nextNode.winnerID] = 1.0
 				} else {
 					var s int
-					result, s = RunSimulation(nextNode.board, nextNode.activeMask, nextNode.playerToMoveID)
+					result, s, _ = RunSimulation(nextNode.board, nextNode.activeMask, nextNode.playerToMoveID)
 					totalSteps += s
 				}
 				nextNode.U = result
@@ -672,17 +616,17 @@ func (m *MCTSPlayer) Backprop(path []PathStep, result [3]float64) {
 }
 
 type MCGSNode struct {
-	board           Board
-	hash            uint64
-	N               int
-	U               [3]float64
-	Q               [3]float64
-	Edges           []MCGSEdge
-	playerToMoveID  int
-	activeMask      uint8
-	winnerID        int
-	untriedMoves    Bitboard
-	UCB1Coeff       float64
+	board          Board
+	hash           uint64
+	N              int
+	U              [3]float64
+	Q              [3]float64
+	Edges          []MCGSEdge
+	playerToMoveID int
+	activeMask     uint8
+	winnerID       int
+	untriedMoves   Bitboard
+	UCB1Coeff      float64
 }
 type MCGSEdge struct {
 	Move    Move
@@ -768,30 +712,40 @@ func SelectBit64(v uint64, k int) int {
 	return bits.TrailingZeros64(pdep(uint64(1)<<uint(k), v))
 }
 
-func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, int) {
+func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, int, Board) {
 	simBoard := board
 	simMask := activeMask
 	curr := currentID
 	steps := 0
+
+	empty := ^simBoard.Occupied
+	var allWins, allLoses [3]Bitboard
+
+	// Initial threat analysis
+	for p := 0; p < 3; p++ {
+		if (simMask & (1 << uint(p))) != 0 {
+			allWins[p], allLoses[p] = GetWinsAndLosses(simBoard.P[p], empty)
+		}
+	}
+
 	for {
 		steps++
 		if simMask&(simMask-1) == 0 {
 			var res [3]float64
 			res[bits.TrailingZeros8(simMask)] = 1.0
-			return res, steps
+			return res, steps, simBoard
 		}
 
-		empty := ^simBoard.Occupied
-		pBoard := simBoard.GetPlayerBoard(curr)
-		myWins, myLoses := GetWinsAndLosses(pBoard, empty)
+		myWins := allWins[curr]
 		if myWins != 0 {
 			var res [3]float64
 			res[curr] = 1.0
-			return res, steps
+			return res, steps, simBoard
 		}
 
 		nextP := int(nextPlayerTable[curr][simMask])
-		nextWins := GetWins(simBoard.GetPlayerBoard(nextP), empty)
+		nextWins := allWins[nextP]
+		myLoses := allLoses[curr]
 
 		var moves Bitboard
 		mustCheckLoss := true
@@ -807,7 +761,7 @@ func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, in
 		}
 
 		if moves == 0 {
-			return [3]float64{}, steps
+			return [3]float64{}, steps, simBoard
 		}
 
 		var selectedIdx int
@@ -822,19 +776,35 @@ func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, in
 		mask := Bitboard(uint64(1) << selectedIdx)
 		simBoard.Occupied |= mask
 		simBoard.P[curr] |= mask
+		empty &= ^mask
 
-		if mustCheckLoss {
-			if (myLoses & mask) != 0 {
-				simMask &= ^(1 << uint(curr))
-				if simMask&(simMask-1) == 0 {
-					var res [3]float64
-					res[bits.TrailingZeros8(simMask)] = 1.0
-					return res, steps
+		if mustCheckLoss && (allLoses[curr]&mask) != 0 {
+			simMask &= ^(1 << uint(curr))
+			if simMask&(simMask-1) == 0 {
+				var res [3]float64
+				res[bits.TrailingZeros8(simMask)] = 1.0
+				return res, steps, simBoard
+			}
+			curr = int(nextPlayerTable[curr][simMask])
+			// Update others and skip recalculation for eliminated curr
+			for p := 0; p < 3; p++ {
+				if (simMask & (1 << uint(p))) != 0 {
+					allWins[p] &= ^mask
+					allLoses[p] &= ^mask
 				}
-				curr = int(nextPlayerTable[curr][simMask])
-				continue
+			}
+			continue
+		}
+
+		// Update others
+		for p := 0; p < 3; p++ {
+			if p != curr && (simMask&(1<<uint(p))) != 0 {
+				allWins[p] &= ^mask
+				allLoses[p] &= ^mask
 			}
 		}
+		// Recalculate for curr
+		allWins[curr], allLoses[curr] = GetWinsAndLosses(simBoard.P[curr], empty)
 		curr = nextP
 	}
 }

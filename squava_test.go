@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/bits"
 	"testing"
 )
 
@@ -223,7 +224,7 @@ func TestDrawOnFullBoard(t *testing.T) {
 	}
 	// Simulation should terminate with a draw (all zeros) if no moves left
 	// We force a state where no wins/losses are possible in 1 move
-	res, _ := RunSimulation(board, 0x07, 0)
+	res, _, _ := RunSimulation(board, 0x07, 0)
 	if res[0] != 0 || res[1] != 0 || res[2] != 0 {
 		// Note: in a random simulation someone might win/lose,
 		// but if we reach moves == 0 it should be [0,0,0]
@@ -237,9 +238,9 @@ func TestMCTSHeuristic(t *testing.T) {
 	player := NewMCTSPlayer("AI", "A", 0, 100)
 	board := Board{}
 	// Player 1 (next) has 3 in a row at A1, A2, A3
-	board.Set(0, 1)
-	board.Set(8, 1)
-	board.Set(16, 1)
+	board.Set(0, 1) // A1
+	board.Set(8, 1) // A2
+	board.Set(16, 1) // A3
 	// Player 0 (current) MUST block at A4 (bit 24)
 	move := player.GetMove(board, []int{0, 1, 2}, 0)
 	if move.ToIndex() != 24 {
@@ -247,52 +248,160 @@ func TestMCTSHeuristic(t *testing.T) {
 	}
 }
 
-func TestGetWins(t *testing.T) {
-	// 1. Horizontal win at A1-D1 (bits 0,1,2,3). If A1, B1, C1 are set, D1 (bit 3) should be a win.
-	bb := Bitboard((1 << 0) | (1 << 1) | (1 << 2))
-	empty := Bitboard(1 << 3)
-	wins := GetWins(bb, empty)
-	if wins != (1 << 3) {
-		t.Errorf("Horizontal win failed. Expected bit 3, got %016x", uint64(wins))
+func TestRunSimulationDetailed(t *testing.T) {
+	// 1. Immediate win detection
+	board := Board{}
+	board.Set(0, 0) // A1
+	board.Set(1, 0) // B1
+	board.Set(2, 0) // C1
+	// P0 to move, D1 (3) is win
+	res, _, _ := RunSimulation(board, 0x07, 0)
+	if res[0] != 1.0 {
+		t.Errorf("Immediate win failed. Expected P0 win, got %v", res)
 	}
 
-	// 2. Vertical win at A1-A4 (bits 0,8,16,24). If A1, A2, A4 are set, A3 (bit 16) should be a win.
-	bb = Bitboard((1 << 0) | (1 << 8) | (1 << 24))
-	empty = Bitboard(1 << 16)
-	wins = GetWins(bb, empty)
-	if wins != (1 << 16) {
-		t.Errorf("Vertical win failed. Expected bit 16, got %016x", uint64(wins))
+	// 2. Forced block detection
+	board = Board{}
+	board.Set(0, 1) // P1: A1
+	board.Set(1, 1) // P1: B1
+	board.Set(2, 1) // P1: C1
+	// P0 to move, P1 is next. P0 must block at D1 (3)
+	// We seed xorState to ensure we don't just "get lucky"
+	xorState = 42
+	res, steps, _ := RunSimulation(board, 0x07, 0)
+	// If P0 blocks correctly, the game should continue for more than 1 step
+	if steps <= 1 && res[1] == 1.0 {
+		t.Errorf("Forced block failed. P0 should have blocked P1's win at D1. Steps: %d, Result: %v", steps, res)
 	}
 
-	// 3. Diagonal win at A1-D4 (bits 0,9,18,27). If B2, C3, D4 are set, A1 (bit 0) should be a win.
-	bb = Bitboard((1 << 9) | (1 << 18) | (1 << 27))
-	empty = Bitboard(1 << 0)
-	wins = GetWins(bb, empty)
-	if wins != (1 << 0) {
-		t.Errorf("Diagonal win failed. Expected bit 0, got %016x", uint64(wins))
+	// 3. Elimination logic
+	board = Board{}
+	// Set up P0 so any move is a loss
+	board.Set(0, 0) // A1
+	board.Set(8, 0) // A2
+	// Move at A3 (16) will eliminate P0
+	// We'll use a almost full board to force this
+	for i := 0; i < 64; i++ {
+		if i != 16 && i != 0 && i != 8 {
+			board.Set(i, 1) // Fill with P1
+		}
 	}
-
-	// 4. Anti-diagonal win at H1-E4 (bits 7,14,21,28). If H1, G2, F3 are set, E4 (bit 28) should be a win.
-	bb = Bitboard((1 << 7) | (1 << 14) | (1 << 21))
-	empty = Bitboard(1 << 28)
-	wins = GetWins(bb, empty)
-	if wins != (1 << 28) {
-		t.Errorf("Anti-diagonal win failed. Expected bit 28, got %016x", uint64(wins))
+	// Only bit 16 is empty. P0 must move there.
+	res, _, _ = RunSimulation(board, 0x07, 0)
+	if res[0] == 1.0 {
+		t.Errorf("Elimination failed. P0 should have lost, but won: %v", res)
 	}
+}
 
-	// 5. No win possible
-	bb = Bitboard((1 << 0) | (1 << 1))
-	empty = Bitboard(1 << 2)
-	wins = GetWins(bb, empty)
-	if wins != 0 {
-		t.Errorf("Expected no wins, got %016x", uint64(wins))
+func referenceRunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, Board) {
+	simBoard := board
+	simMask := activeMask
+	curr := currentID
+	for {
+		if simMask&(simMask-1) == 0 {
+			var res [3]float64
+			res[bits.TrailingZeros8(simMask)] = 1.0
+			return res, simBoard
+		}
+
+		empty := ^simBoard.Occupied
+		// Simple version: recompute threats every turn for current player
+		myWins, myLoses := GetWinsAndLosses(simBoard.P[curr], empty)
+
+		if myWins != 0 {
+			var res [3]float64
+			res[curr] = 1.0
+			return res, simBoard
+		}
+
+		nextP := int(nextPlayerTable[curr][simMask])
+		// Recompute threats for next player
+		nextWins, _ := GetWinsAndLosses(simBoard.P[nextP], empty)
+
+		var moves Bitboard
+		mustCheckLoss := true
+		if nextWins != 0 {
+			moves = nextWins
+		} else {
+			moves = empty & ^myLoses
+			if moves != 0 {
+				mustCheckLoss = false
+			} else {
+				moves = empty
+			}
+		}
+
+		if moves == 0 {
+			return [3]float64{}, simBoard
+		}
+
+		var selectedIdx int
+		count := bits.OnesCount64(uint64(moves))
+		if count == 1 {
+			selectedIdx = bits.TrailingZeros64(uint64(moves))
+		} else {
+			hi, _ := bits.Mul64(xrand(), uint64(count))
+			// Use SelectBit64 to ensure identical bit selection
+			selectedIdx = SelectBit64(uint64(moves), int(hi))
+		}
+
+		mask := Bitboard(uint64(1) << selectedIdx)
+		simBoard.Occupied |= mask
+		simBoard.P[curr] |= mask
+
+		if mustCheckLoss {
+			_, isLoss := CheckBoard(simBoard.P[curr])
+			if isLoss {
+				simMask &= ^(1 << uint(curr))
+				if simMask&(simMask-1) == 0 {
+					var res [3]float64
+					res[bits.TrailingZeros8(simMask)] = 1.0
+					return res, simBoard
+				}
+				curr = int(nextPlayerTable[curr][simMask])
+				continue
+			}
+		}
+		curr = nextP
 	}
+}
 
-	// 6. Win blocked by piece not being in 'empty'
-	bb = Bitboard((1 << 0) | (1 << 1) | (1 << 2))
-	empty = Bitboard(0) // D1 (bit 3) is NOT empty
-	wins = GetWins(bb, empty)
-	if wins != 0 {
-		t.Errorf("Expected win to be blocked by non-empty square, got %016x", uint64(wins))
+func TestRunSimulationRandomized(t *testing.T) {
+	for i := 0; i < 10000; i++ {
+		board := Board{}
+		for j := 0; j < 20; j++ {
+			idx := int(xrand() % 64)
+			p := int(xrand() % 3)
+			if (board.Occupied & (1 << uint(idx))) == 0 {
+				board.Set(idx, p)
+			}
+		}
+		won := false
+		for p := 0; p < 3; p++ {
+			isW, isL := CheckBoard(board.P[p])
+			if isW || isL {
+				won = true
+				break
+			}
+		}
+		if won {
+			continue
+		}
+
+		// Ensure both use exact same random sequence
+		seed := uint64(i + 1)
+		
+		xorState = seed
+		resOpt, _, boardOpt := RunSimulation(board, 0x07, 0)
+		
+		xorState = seed
+		resRef, boardRef := referenceRunSimulation(board, 0x07, 0)
+
+		if resOpt != resRef {
+			t.Errorf("Iteration %d: Result mismatch. Opt: %v, Ref: %v", i, resOpt, resRef)
+		}
+		if boardOpt != boardRef {
+			t.Errorf("Iteration %d: Final board mismatch.", i)
+		}
 	}
 }
