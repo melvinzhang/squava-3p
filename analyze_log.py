@@ -41,6 +41,7 @@ def analyze_squava_log(filepath):
         current_player = None
         game_winner = None
         game_win_type = None
+        seed = None
         
         # Per-game tracking
         player_last_wr = {} # {player_id: winrate_float}
@@ -50,6 +51,11 @@ def analyze_squava_log(filepath):
         
         for line in lines:
             line = line.strip()
+
+            # 0. Detect Seed
+            seed_match = re.search(r"Random Seed: (\d+)", line)
+            if seed_match:
+                seed = seed_match.group(1)
             
             # 1. Detect Turn
             turn_match = re.search(r"Turn: Player (\d)", line)
@@ -77,7 +83,8 @@ def analyze_squava_log(filepath):
                             'new': wr,
                             'diff': diff,
                             'reason': "Shift",
-                            'context': context
+                            'context': context,
+                            'seed': seed
                         })
                 
                 player_last_wr[current_player] = wr
@@ -111,7 +118,8 @@ def analyze_squava_log(filepath):
                             'new': 0.0,
                             'diff': diff,
                             'reason': "Elimination",
-                            'context': context
+                            'context': context,
+                            'seed': seed
                         })
                 
             # 5. Detect Win (4-in-a-row)
@@ -180,6 +188,8 @@ def analyze_squava_log(filepath):
     else:
         for b in blunders:
             print(f"  Game {b['game']} Move {b['move_idx']} (P{b['player']}): {b['old']:.1f}% -> {b['new']:.1f}% ({b['diff']:.1f}%) [{b['reason']}]")
+            if b.get('seed'):
+                print(f"    Seed: {b['seed']}")
             print(f"    Context: {', '.join(b['context'])}")
 
     # 6. Confidence
