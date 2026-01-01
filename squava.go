@@ -466,10 +466,9 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 			// Add Edge
 			edgeIdx := len(leaf.Edges)
 			leaf.Edges = append(leaf.Edges, MCGSEdge{
-				Move:    move,
-				Dest:    nextNode,
-				Visits:  0,
-				CachedQ: nextNode.Q[leaf.playerToMoveID],
+				Move:   move,
+				Dest:   nextNode,
+				Visits: 0,
 			})
 			// Add to path
 			path = append(path, PathStep{Node: nextNode, EdgeIdx: edgeIdx})
@@ -573,7 +572,7 @@ func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
 			} else {
 				u = c / math.Sqrt(float64(vPlus1))
 			}
-			score := edge.CachedQ + u
+			score := edge.Dest.Q[current.playerToMoveID] + u
 			if score > bestScore {
 				bestScore = score
 				bestEdgeIdx = i
@@ -610,7 +609,6 @@ func (m *MCTSPlayer) Backprop(path []PathStep, result [3]float64) {
 			parent := path[i-1].Node
 			edge := &parent.Edges[step.EdgeIdx]
 			edge.Visits++
-			edge.CachedQ = node.Q[parent.playerToMoveID]
 		}
 	}
 }
@@ -628,10 +626,9 @@ type MCGSNode struct {
 	UCB1Coeff      float64
 }
 type MCGSEdge struct {
-	Move    Move
-	Dest    *MCGSNode
-	Visits  int
-	CachedQ float64
+	Move   Move
+	Dest   *MCGSNode
+	Visits int
 }
 
 func NewMCGSNode(board Board, playerToMoveID int, activeMask uint8, hash uint64, winnerID int) *MCGSNode {
