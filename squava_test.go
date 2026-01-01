@@ -143,8 +143,9 @@ func TestSimulationLogic(t *testing.T) {
 	board := Board{}
 	board.Set(0, 0)
 	board.Set(1, 0)
+	h := ZobristHash(board, 0, 0x07)
 	// P0 moves to 2, creating 3-in-a-row
-	state := SimulateStep(board, 0x07, 0, MoveFromIndex(2))
+	state := SimulateStep(board, 0x07, 0, MoveFromIndex(2), h)
 
 	if state.winnerID != -1 {
 		t.Errorf("Expected no winner yet, got %d", state.winnerID)
@@ -162,11 +163,12 @@ func TestSimulationLogic(t *testing.T) {
 	board.Set(1, 0)
 	board.Set(8, 1)
 	board.Set(9, 1)
+	h = ZobristHash(board, 0, 0x07)
 
 	// P0 moves to 2 -> eliminated. Mask becomes 0x06 (P1, P2)
-	state1 := SimulateStep(board, 0x07, 0, MoveFromIndex(2))
+	state1 := SimulateStep(board, 0x07, 0, MoveFromIndex(2), h)
 	// P1 moves to 10 -> eliminated. Mask becomes 0x04 (P2)
-	state2 := SimulateStep(state1.board, state1.activeMask, 1, MoveFromIndex(10))
+	state2 := SimulateStep(state1.board, state1.activeMask, 1, MoveFromIndex(10), state1.hash)
 
 	if state2.winnerID != 2 {
 		t.Errorf("Expected Player 2 to win as last man standing, got %d", state2.winnerID)

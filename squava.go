@@ -74,8 +74,8 @@ var (
 
 // Board represents the game state using bitboards
 type Board struct {
-	P1, P2, P3 Bitboard
-	Occupied   Bitboard
+	P        [3]Bitboard
+	Occupied Bitboard
 }
 type Bitboard uint64
 type Player interface {
@@ -107,28 +107,14 @@ func MoveFromIndex(idx int) Move {
 
 // --- Bitboard Logic ---
 func (b *Board) Set(idx int, pID int) {
-	mask := uint64(1) << idx
-	b.Occupied |= Bitboard(mask)
-	switch pID {
-	case 0:
-		b.P1 |= Bitboard(mask)
-	case 1:
-		b.P2 |= Bitboard(mask)
-	case 2:
-		b.P3 |= Bitboard(mask)
-	}
+	mask := Bitboard(uint64(1) << idx)
+	b.P[pID] |= mask
+	b.Occupied |= mask
 }
 func (b *Board) GetPlayerBoard(pID int) Bitboard {
-	switch pID {
-	case 0:
-		return b.P1
-	case 1:
-		return b.P2
-	case 2:
-		return b.P3
-	}
-	return 0
+	return b.P[pID]
 }
+
 func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 	wins, loses := GetWinsAndLosses(bb, bb)
 	isWin = wins != 0
@@ -460,23 +446,13 @@ func ZobristHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
 		h = zobristTurn[playerToMoveID]
 	}
 	h ^= zobristActive[activeMask]
-	p1 := uint64(board.P1)
-	for p1 != 0 {
-		idx := bits.TrailingZeros64(p1)
-		h ^= zobristP[0][idx]
-		p1 &= p1 - 1
-	}
-	p2 := uint64(board.P2)
-	for p2 != 0 {
-		idx := bits.TrailingZeros64(p2)
-		h ^= zobristP[1][idx]
-		p2 &= p2 - 1
-	}
-	p3 := uint64(board.P3)
-	for p3 != 0 {
-		idx := bits.TrailingZeros64(p3)
-		h ^= zobristP[2][idx]
-		p3 &= p3 - 1
+	for p := 0; p < 3; p++ {
+		pBoard := uint64(board.P[p])
+		for pBoard != 0 {
+			idx := bits.TrailingZeros64(pBoard)
+			h ^= zobristP[p][idx]
+			pBoard &= pBoard - 1
+		}
 	}
 	return h
 }
@@ -491,13 +467,13 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 	var root *MCGSNode
 	if entry := tt[idx]; entry.hash == rootHash {
 		candidate := entry.ptr.Value()
-		if candidate != nil && candidate.Matches(board, players[turnIdx], activeMask) {
+		if candidate != nil && candidate.Matches(board, players[turnIdx], activeMask, rootHash) {
 			root = candidate
 		}
 	}
 
 	if root == nil {
-		root = NewMCGSNode(board, players[turnIdx], activeMask)
+		root = NewMCGSNode(board, players[turnIdx], activeMask, rootHash, -1)
 		tt[idx] = TTEntry{hash: rootHash, ptr: weak.Make(root)}
 	}
 	m.root = root
@@ -524,13 +500,13 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 			// Remove move from untried
 			leaf.untriedMoves &= Bitboard(^(uint64(1) << idx))
 			// Calc next state
-			state := SimulateStep(leaf.board, leaf.activeMask, leaf.playerToMoveID, move)
-			hash := ZobristHash(state.board, state.nextPlayerID, state.activeMask)
+			state := SimulateStep(leaf.board, leaf.activeMask, leaf.playerToMoveID, move, leaf.hash)
+			hash := state.hash
 			ttIdx := int(hash & TTMask)
 			var nextNode *MCGSNode
 			if entry := tt[ttIdx]; entry.hash == hash {
 				candidate := entry.ptr.Value()
-				if candidate != nil && candidate.Matches(state.board, state.nextPlayerID, state.activeMask) {
+				if candidate != nil && candidate.Matches(state.board, state.nextPlayerID, state.activeMask, hash) {
 					nextNode = candidate
 				}
 			}
@@ -538,8 +514,7 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 			if nextNode != nil {
 				result = nextNode.Q // Use existing node's Q for backprop
 			} else {
-				nextNode = NewMCGSNode(state.board, state.nextPlayerID, state.activeMask)
-				nextNode.winnerID = state.winnerID
+				nextNode = NewMCGSNode(state.board, state.nextPlayerID, state.activeMask, hash, state.winnerID)
 				tt[ttIdx] = TTEntry{hash: hash, ptr: weak.Make(nextNode)}
 
 				// Rollout ONLY for new nodes
@@ -700,16 +675,17 @@ func (m *MCTSPlayer) Backprop(path []PathStep, result [3]float64) {
 }
 
 type MCGSNode struct {
-	board          Board
-	N              int
-	U              [3]float64
-	Q              [3]float64
-	Edges          []MCGSEdge
-	playerToMoveID int
-	activeMask     uint8
-	winnerID       int
-	untriedMoves   Bitboard
-	UCB1Coeff      float64
+	board           Board
+	hash            uint64
+	N               int
+	U               [3]float64
+	Q               [3]float64
+	Edges           []MCGSEdge
+	playerToMoveID  int
+	activeMask      uint8
+	winnerID        int
+	untriedMoves    Bitboard
+	UCB1Coeff       float64
 }
 type MCGSEdge struct {
 	Move    Move
@@ -718,20 +694,24 @@ type MCGSEdge struct {
 	CachedQ float64
 }
 
-func NewMCGSNode(board Board, playerToMoveID int, activeMask uint8) *MCGSNode {
-	node := &MCGSNode{
+func NewMCGSNode(board Board, playerToMoveID int, activeMask uint8, hash uint64, winnerID int) *MCGSNode {
+	var untried Bitboard
+	if winnerID == -1 {
+		nextP := getNextPlayer(playerToMoveID, activeMask)
+		untried = GetBestMoves(board, AnalyzeThreats(board, playerToMoveID, nextP))
+	}
+	n := &MCGSNode{
 		board:          board,
+		hash:           hash,
 		playerToMoveID: playerToMoveID,
 		activeMask:     activeMask,
-		winnerID:       -1,
-		UCB1Coeff:      0,
+		winnerID:       winnerID,
+		untriedMoves:   untried,
 	}
-	node.untriedMoves = node.GetPossibleMoves()
-	return node
+	return n
 }
-
-func (n *MCGSNode) Matches(board Board, playerToMoveID int, activeMask uint8) bool {
-	return n.board == board && n.playerToMoveID == playerToMoveID && n.activeMask == activeMask
+func (n *MCGSNode) Matches(board Board, playerToMoveID int, activeMask uint8, hash uint64) bool {
+	return n.hash == hash && n.playerToMoveID == playerToMoveID && n.activeMask == activeMask && n.board == board
 }
 
 func (n *MCGSNode) GetPossibleMoves() Bitboard {
@@ -754,27 +734,36 @@ type State struct {
 	nextPlayerID int
 	activeMask   uint8
 	winnerID     int
+	hash         uint64
 }
 
 // --- Simulation Logic ---
-func SimulateStep(board Board, activeMask uint8, currentID int, move Move) State {
+func SimulateStep(board Board, activeMask uint8, currentID int, move Move, currentHash uint64) State {
 	newBoard := board
-	newBoard.Set(move.ToIndex(), currentID)
+	idx := move.ToIndex()
+	mask := Bitboard(uint64(1) << idx)
+	newBoard.P[currentID] |= mask
+	newBoard.Occupied |= mask
+
+	newHash := currentHash ^ zobristP[currentID][idx] ^ zobristTurn[currentID]
+
 	isWin, isLoss := CheckBoard(newBoard.GetPlayerBoard(currentID))
 	if isWin {
-		return State{board: newBoard, nextPlayerID: -1, activeMask: activeMask, winnerID: currentID}
+		return State{board: newBoard, nextPlayerID: -1, activeMask: activeMask, winnerID: currentID, hash: newHash}
 	}
 	if isLoss {
 		newMask := activeMask & ^(1 << uint(currentID))
 		if bits.OnesCount8(newMask) == 1 {
 			winnerID := bits.TrailingZeros8(newMask)
-			return State{board: newBoard, nextPlayerID: -1, activeMask: newMask, winnerID: winnerID}
+			return State{board: newBoard, nextPlayerID: -1, activeMask: newMask, winnerID: winnerID, hash: newHash}
 		}
 		nextID := getNextPlayer(currentID, newMask)
-		return State{board: newBoard, nextPlayerID: nextID, activeMask: newMask, winnerID: -1}
+		newHash ^= zobristTurn[nextID] ^ zobristActive[activeMask] ^ zobristActive[newMask]
+		return State{board: newBoard, nextPlayerID: nextID, activeMask: newMask, winnerID: -1, hash: newHash}
 	}
 	nextID := getNextPlayer(currentID, activeMask)
-	return State{board: newBoard, nextPlayerID: nextID, activeMask: activeMask, winnerID: -1}
+	newHash ^= zobristTurn[nextID]
+	return State{board: newBoard, nextPlayerID: nextID, activeMask: activeMask, winnerID: -1, hash: newHash}
 }
 func SelectBit64(v uint64, k int) int {
 	pos := 0
@@ -852,14 +841,7 @@ func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, in
 
 		mask := Bitboard(uint64(1) << selectedIdx)
 		simBoard.Occupied |= mask
-		switch curr {
-		case 0:
-			simBoard.P1 |= mask
-		case 1:
-			simBoard.P2 |= mask
-		case 2:
-			simBoard.P3 |= mask
-		}
+		simBoard.P[curr] |= mask
 
 		if mustCheckLoss {
 			if (myLoses & mask) != 0 {
@@ -901,12 +883,12 @@ func (g *SquavaGame) PrintBoard() {
 		for c := 0; c < BoardSize; c++ {
 			symbol := "."
 			idx := r*8 + c
-			mask := uint64(1) << idx
-			if (uint64(g.board.P1) & mask) != 0 {
+			mask := Bitboard(uint64(1) << idx)
+			if (g.board.P[0] & mask) != 0 {
 				symbol = "X"
-			} else if (uint64(g.board.P2) & mask) != 0 {
+			} else if (g.board.P[1] & mask) != 0 {
 				symbol = "O"
-			} else if (uint64(g.board.P3) & mask) != 0 {
+			} else if (g.board.P[2] & mask) != 0 {
 				symbol = "Z"
 			}
 			fmt.Printf("%s ", symbol)
