@@ -1,7 +1,8 @@
-.PHONY: all build test clean profile analyze
+.PHONY: all build test clean profile analyze fuzz
 
 BINARY_NAME=squava
 ITERATIONS=100000
+FUZZ_ITERS=100000
 
 all: build
 
@@ -10,6 +11,9 @@ build:
 
 test:
 	go test -v .
+
+fuzz:
+	go test -v . -args -fuzz_iters=$(FUZZ_ITERS)
 
 clean:
 	go clean
