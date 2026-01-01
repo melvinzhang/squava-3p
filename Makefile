@@ -18,7 +18,7 @@ fuzz:
 benchmark: build
 	@echo "Starting benchmark: 100 games with 1M iterations..."
 	@rm -f log_1M
-	@for i in {1..100}; do \
+	@for i in $$(seq 100); do \
 		echo "Running game $$i/100..." ; \
 		./$(BINARY_NAME) -p1 mcts -p2 mcts -p3 mcts -iterations $(ITERATIONS) >> log_1M 2>&1 ; \
 	done
