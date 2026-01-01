@@ -370,6 +370,7 @@ type MCTSPlayer struct {
 	iterations int
 	path       []PathStep
 	root       *MCGSNode
+	Verbose    bool
 }
 
 func NewMCTSPlayer(name, symbol string, id int, iterations int) *MCTSPlayer {
@@ -489,14 +490,16 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 
 	elapsed := time.Since(startTime)
 	totalRollouts := root.N - startRollouts
-	if elapsed.Seconds() > 0 {
+	if m.Verbose && elapsed.Seconds() > 0 {
 		sps := float64(totalSteps) / elapsed.Seconds()
 		fmt.Printf("Rollouts: %d, Steps: %d, Time: %v, SPS: %.2f\n", totalRollouts, totalSteps, elapsed, sps)
 	}
 
 	// Stats and Selection
 	myID := players[turnIdx]
-	fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
+	if m.Verbose {
+		fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
+	}
 	bestVisits := -1
 	var bestMove Move
 	// Sort moves by visits for cleaner output
@@ -522,14 +525,16 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 		}
 	}
 	// Print top 5 moves
-	fmt.Println("Top moves:")
-	limit := 5
-	if len(stats) < limit {
-		limit = len(stats)
-	}
-	for i := 0; i < limit; i++ {
-		s := stats[i]
-		fmt.Printf("  %c%d: Visits: %d, Winrate: %.2f%%\n", s.mv.c+65, s.mv.r+1, s.visits, s.winrate*100)
+	if m.Verbose {
+		fmt.Println("Top moves:")
+		limit := 5
+		if len(stats) < limit {
+			limit = len(stats)
+		}
+		for i := 0; i < limit; i++ {
+			s := stats[i]
+			fmt.Printf("  %c%d: Visits: %d, Winrate: %.2f%%\n", s.mv.c+65, s.mv.r+1, s.visits, s.winrate*100)
+		}
 	}
 	if bestVisits == -1 {
 		// Fallback
@@ -937,7 +942,9 @@ func main() {
 	game := NewSquavaGame()
 	createPlayer := func(t, name, symbol string, id int) Player {
 		if t == "mcts" {
-			return NewMCTSPlayer(name, symbol, id, *iterations)
+			p := NewMCTSPlayer(name, symbol, id, *iterations)
+			p.Verbose = true
+			return p
 		}
 		return NewHumanPlayer(name, symbol, id)
 	}
