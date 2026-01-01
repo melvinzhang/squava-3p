@@ -641,3 +641,107 @@ func TestHeuristicMoveGenerationFuzz(t *testing.T) {
 		}
 	}
 }
+
+func ValidateMCTSGraph(t *testing.T, root *MCGSNode) {
+	if root == nil {
+		t.Error("Root is nil")
+		return
+	}
+
+	// Track visited nodes to handle DAG structure (shared nodes)
+	visited := make(map[*MCGSNode]bool)
+	// Track recursion stack for cycle detection
+	stack := make(map[*MCGSNode]bool)
+
+	var checkNode func(node *MCGSNode)
+	checkNode = func(node *MCGSNode) {
+		// 1. Cycle Detection
+		if stack[node] {
+			t.Errorf("Cycle detected in MCTS graph at node hash %016x", node.hash)
+			return
+		}
+		// 2. Transposition Handling (memoization)
+		if visited[node] {
+			return
+		}
+		visited[node] = true
+		stack[node] = true
+		defer func() { stack[node] = false }()
+
+		// 3. Value Invariants
+		if node.N < 0 {
+			t.Errorf("Node %016x has negative visits: %d", node.hash, node.N)
+		}
+		// Assuming Win/Loss rewards are 0.0 to 1.0 (or -1 to 1)
+		// Squava implementation uses [0,1]
+		for i := 0; i < 3; i++ {
+			if node.Q[i] < -0.01 || node.Q[i] > 1.01 {
+				t.Errorf("Node %016x has Q value out of bounds [0,1]: %v", node.hash, node.Q)
+			}
+		}
+
+		// 4. Edge Invariants
+		sumEdgeVisits := 0
+		for _, edge := range node.Edges {
+			sumEdgeVisits += edge.Visits
+
+			if edge.Dest == nil {
+				t.Errorf("Node %016x has edge with nil destination", node.hash)
+				continue
+			}
+
+			// DAG Invariant: Edge Visits vs Child Total Visits
+			// The number of times we traversed THIS edge to get to Child
+			// must be <= Total times Child was visited (from any parent).
+			if edge.Visits > edge.Dest.N {
+				t.Errorf("Flow violation: Edge from %016x to %016x has %d visits, but child only has %d total visits.",
+					node.hash, edge.Dest.hash, edge.Visits, edge.Dest.N)
+			}
+
+			// 5. State Consistency Check
+			// Re-simulate the move to ensure the hash matches the destination node
+			expectedState := SimulateStep(node.board, node.activeMask, node.playerToMoveID, edge.Move, node.hash)
+			if expectedState.hash != edge.Dest.hash {
+				t.Errorf("Hash consistency violation on edge %v: Expected %016x, got %016x",
+					edge.Move, expectedState.hash, edge.Dest.hash)
+			}
+
+			// Recurse
+			checkNode(edge.Dest)
+		}
+
+		// 6. Conservation of Flow (Outgoing)
+		// The number of times we left this node cannot exceed the number of times we visited it.
+		// node.N includes the visit where we stopped at this node (didn't traverse out).
+		if sumEdgeVisits > node.N {
+			t.Errorf("Node %016x has %d outgoing edge visits but only %d total node visits",
+				node.hash, sumEdgeVisits, node.N)
+		}
+	}
+
+	checkNode(root)
+}
+
+func TestMCTSInvariants(t *testing.T) {
+	// Run a short game/simulation to build a graph
+	player := NewMCTSPlayer("Tester", "T", 0, 2000) // Adequate iterations to build structure
+	board := Board{}
+
+	// Force a specific scenario or random play
+	// Let's set up a mid-game state to encourage transpositions
+	board.Set(0, 0)
+	board.Set(1, 1)
+	board.Set(8, 0)
+	board.Set(9, 1)
+
+	// Run MCTS search
+	// We don't care about the resulting move, just the graph structure
+	_ = player.GetMove(board, []int{0, 1, 2}, 0)
+
+	if player.root == nil {
+		t.Fatal("MCTS did not generate a root node")
+	}
+
+	// Validate the resulting graph
+	ValidateMCTSGraph(t, player.root)
+}
