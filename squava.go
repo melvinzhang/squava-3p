@@ -765,27 +765,10 @@ func SimulateStep(board Board, activeMask uint8, currentID int, move Move, curre
 	newHash ^= zobristTurn[nextID]
 	return State{board: newBoard, nextPlayerID: nextID, activeMask: activeMask, winnerID: -1, hash: newHash}
 }
+func pdep(src, mask uint64) uint64
+
 func SelectBit64(v uint64, k int) int {
-	pos := 0
-	c32 := bits.OnesCount32(uint32(v))
-	if k >= c32 {
-		k -= c32
-		v >>= 32
-		pos += 32
-	}
-	c16 := bits.OnesCount16(uint16(v))
-	if k >= c16 {
-		k -= c16
-		v >>= 16
-		pos += 16
-	}
-	c8 := bits.OnesCount8(uint8(v))
-	if k >= c8 {
-		k -= c8
-		v >>= 8
-		pos += 8
-	}
-	return pos + int(select8[uint8(v)][k])
+	return bits.TrailingZeros64(pdep(uint64(1)<<uint(k), v))
 }
 
 func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, int) {
