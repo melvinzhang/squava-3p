@@ -469,3 +469,48 @@ func TestZobristIncrementalFuzz(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectBit64Fuzz(t *testing.T) {
+	referenceSelectBit64 := func(v uint64, k int) int {
+		count := 0
+		for i := 0; i < 64; i++ {
+			if (v & (1 << uint(i))) != 0 {
+				if count == k {
+					return i
+				}
+				count++
+			}
+		}
+		return 64
+	}
+
+	for i := 0; i < 100000; i++ {
+		// Generate various types of bit patterns
+		var v uint64
+		switch i % 4 {
+		case 0:
+			v = xrand() // Completely random
+		case 1:
+			v = 1 << (xrand() % 64) // Single bit
+		case 2:
+			v = ^uint64(0) // All bits set
+		case 3:
+			v = xrand() & xrand() & xrand() // Sparse
+		}
+
+		count := bits.OnesCount64(v)
+		if count == 0 {
+			continue
+		}
+
+		k := int(xrand() % uint64(count))
+		expected := referenceSelectBit64(v, k)
+		actual := SelectBit64(v, k)
+
+		if actual != expected {
+			t.Errorf("Iteration %d: Mismatch for v=%016x, k=%d. Expected bit %d, got %d",
+				i, v, k, expected, actual)
+			return
+		}
+	}
+}
