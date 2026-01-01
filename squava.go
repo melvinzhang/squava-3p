@@ -550,6 +550,8 @@ type PathStep struct {
 	EdgeIdx int // Index in the parent's Edges slice
 }
 
+var negInf = math.Inf(-1)
+
 func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
 	m.path = m.path[:0]
 	m.path = append(m.path, PathStep{Node: root, EdgeIdx: -1})
@@ -561,7 +563,7 @@ func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
 		if len(current.Edges) == 0 {
 			return m.path // Terminal
 		}
-		bestScore := math.Inf(-1)
+		bestScore := negInf
 		bestEdgeIdx := -1
 		c := current.UCB1Coeff
 		edges := current.Edges
