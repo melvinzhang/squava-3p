@@ -382,12 +382,25 @@ func isValidCoord(r, c int) bool {
 	return r >= 0 && r < BoardSize && c >= 0 && c < BoardSize
 }
 
-var invSqrtTable [1000001]float64
-var coeffTable [1000001]float64
-
-var nextPlayerTable [3][256]int8
+var (
+	invSqrtTable    [100000]float64
+	coeffTable      [100000]float64
+	tt              []TTEntry
+	select8         [256][8]uint8
+	nextPlayerTable [3][256]int8
+)
 
 func init() {
+	for i := 0; i < 256; i++ {
+		k := 0
+		for j := 0; j < 8; j++ {
+			if (i & (1 << uint(j))) != 0 {
+				select8[i][k] = uint8(j)
+				k++
+			}
+		}
+	}
+
 	initZobrist()
 	for p := 0; p < 3; p++ {
 		for m := 0; m < 256; m++ {
@@ -422,8 +435,6 @@ type TTEntry struct {
 	hash uint64
 	ptr  weak.Pointer[MCGSNode]
 }
-
-var tt []TTEntry
 
 type MCTSPlayer struct {
 	info       PlayerInfo
@@ -502,12 +513,13 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 		var result [3]float64
 		if leaf.untriedMoves != 0 {
 			count := bits.OnesCount64(uint64(leaf.untriedMoves))
-			pick := int(xrand() % uint64(count))
-			temp := uint64(leaf.untriedMoves)
-			for j := 0; j < pick; j++ {
-				temp &= temp - 1
+			var idx int
+			if count == 1 {
+				idx = bits.TrailingZeros64(uint64(leaf.untriedMoves))
+			} else {
+				hi, _ := bits.Mul64(xrand(), uint64(count))
+				idx = SelectBit64(uint64(leaf.untriedMoves), int(hi))
 			}
-			idx := bits.TrailingZeros64(temp)
 			move := MoveFromIndex(idx)
 			// Remove move from untried
 			leaf.untriedMoves &= Bitboard(^(uint64(1) << idx))
@@ -764,6 +776,29 @@ func SimulateStep(board Board, activeMask uint8, currentID int, move Move) State
 	nextID := getNextPlayer(currentID, activeMask)
 	return State{board: newBoard, nextPlayerID: nextID, activeMask: activeMask, winnerID: -1}
 }
+func SelectBit64(v uint64, k int) int {
+	pos := 0
+	c32 := bits.OnesCount32(uint32(v))
+	if k >= c32 {
+		k -= c32
+		v >>= 32
+		pos += 32
+	}
+	c16 := bits.OnesCount16(uint16(v))
+	if k >= c16 {
+		k -= c16
+		v >>= 16
+		pos += 16
+	}
+	c8 := bits.OnesCount8(uint8(v))
+	if k >= c8 {
+		k -= c8
+		v >>= 8
+		pos += 8
+	}
+	return pos + int(select8[uint8(v)][k])
+}
+
 func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, int) {
 	simBoard := board
 	simMask := activeMask
@@ -811,12 +846,8 @@ func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float64, in
 		if count == 1 {
 			selectedIdx = bits.TrailingZeros64(uint64(moves))
 		} else {
-			pick := int(xrand() % uint64(count))
-			temp := uint64(moves)
-			for i := 0; i < pick; i++ {
-				temp &= temp - 1
-			}
-			selectedIdx = bits.TrailingZeros64(temp)
+			hi, _ := bits.Mul64(xrand(), uint64(count))
+			selectedIdx = SelectBit64(uint64(moves), int(hi))
 		}
 
 		mask := Bitboard(uint64(1) << selectedIdx)
