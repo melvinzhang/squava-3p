@@ -1,27 +1,12 @@
 import re
 import statistics
 from collections import Counter, defaultdict
+import sys
+import glob
 
-def analyze_squava_log(filepath):
-    print(f"Analyzing {filepath}...")
+def analyze_squava_logs(filepaths):
+    print(f"Analyzing {len(filepaths)} log files...")
     
-    try:
-        with open(filepath, 'r') as f:
-            content = f.read()
-    except FileNotFoundError:
-        print(f"File '{filepath}' not found.")
-        return
-
-    # Split into games based on the start banner
-    raw_games = content.split("Starting 3-Player Squava!")
-    # Filter out empty strings (e.g. file start)
-    games = [g for g in raw_games if g.strip()]
-
-    print(f"Found {len(games)} games in log.")
-
-    if not games:
-        return
-
     # --- Aggregators ---
     winners = []
     win_types = []
@@ -32,124 +17,150 @@ def analyze_squava_log(filepath):
     est_winrates = defaultdict(list) 
     
     # Blunder Tracking
-    # List of dicts: {game_id, move_num, player, old_wr, new_wr, diff, context}
+    # List of dicts: {seed, move_num, player, old_wr, new_wr, diff, context}
     blunders = []
     DROP_THRESHOLD = 50.0
+    
+    games_processed = 0
 
-    for game_idx, game_data in enumerate(games):
-        moves_in_game = 0
-        current_player = None
-        game_winner = None
-        game_win_type = None
-        seed = None
-        
-        # Per-game tracking
-        player_last_wr = {} # {player_id: winrate_float}
-        move_history = []   # list of "P1: A1" strings
-        
-        lines = game_data.strip().split('\n')
-        
-        for line in lines:
-            line = line.strip()
+    for filepath in filepaths:
+        try:
+            with open(filepath, 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            print(f"File '{filepath}' not found.")
+            continue
 
-            # 0. Detect Seed
-            seed_match = re.search(r"Random Seed: (\d+)", line)
-            if seed_match:
-                seed = seed_match.group(1)
+        # Each file is expected to contain one game, but we'll use the banner just in case
+        # or treat the whole file as one game if banner is missing but content exists
+        raw_games = content.split("Starting 3-Player Squava!")
+        # Filter out empty strings (e.g. file start)
+        games = [g for g in raw_games if g.strip()]
+        
+        if not games:
+            # Fallback: maybe the file is just the log without the banner?
+            if content.strip():
+                games = [content]
+            else:
+                continue
+
+        for game_data in games:
+            games_processed += 1
+            moves_in_game = 0
+            current_player = None
+            game_winner = None
+            game_win_type = None
+            seed = "Unknown"
             
-            # 1. Detect Turn
-            turn_match = re.search(r"Turn: Player (\d)", line)
-            if turn_match:
-                current_player = int(turn_match.group(1))
-                
-            # 2. Detect Estimated Winrate
-            wr_match = re.search(r"Estimated Winrate: ([\d\.]+)%", line)
-            if wr_match and current_player:
-                wr = float(wr_match.group(1))
-                est_winrates[current_player].append(wr)
-                
-                # Check for drop
-                if current_player in player_last_wr:
-                    old_wr = player_last_wr[current_player]
-                    diff = wr - old_wr
-                    if abs(diff) > DROP_THRESHOLD:
-                        # Found a big drop
-                        context = move_history[-3:] if len(move_history) >= 3 else move_history
-                        blunders.append({
-                            'game': game_idx + 1,
-                            'move_idx': moves_in_game,
-                            'player': current_player,
-                            'old': old_wr,
-                            'new': wr,
-                            'diff': diff,
-                            'reason': "Shift",
-                            'context': context,
-                            'seed': seed
-                        })
-                
-                player_last_wr[current_player] = wr
+            # Per-game tracking
+            player_last_wr = {} # {player_id: winrate_float}
+            move_history = []   # list of "P1: A1" strings
+            
+            lines = game_data.strip().split('\n')
+            
+            for line in lines:
+                line = line.strip()
 
-            # 3. Detect Move Choice
-            # "Player 1 chooses A1"
-            move_match = re.search(r"Player (\d) chooses ([A-H][1-8])", line)
-            if move_match:
-                p_id = int(move_match.group(1))
-                mv = move_match.group(2)
-                move_history.append(f"P{p_id}:{mv}")
-                moves_in_game += 1
+                # 0. Detect Seed
+                seed_match = re.search(r"Random Seed: (\d+)", line)
+                if seed_match:
+                    seed = seed_match.group(1)
                 
-            # 4. Detect Elimination (Loss)
-            elim_match = re.search(r"Oops! Player (\d) made 3 in a row", line)
-            if elim_match:
-                eliminated_player = int(elim_match.group(1))
-                eliminations[eliminated_player] += 1
-                
-                # Record elimination as drop to 0
-                if eliminated_player in player_last_wr:
-                    old_wr = player_last_wr[eliminated_player]
-                    diff = 0.0 - old_wr
-                    if abs(diff) > DROP_THRESHOLD:
-                        context = move_history[-3:]
-                        blunders.append({
-                            'game': game_idx + 1,
-                            'move_idx': moves_in_game,
-                            'player': eliminated_player,
-                            'old': old_wr,
-                            'new': 0.0,
-                            'diff': diff,
-                            'reason': "Elimination",
-                            'context': context,
-                            'seed': seed
-                        })
-                
-            # 5. Detect Win (4-in-a-row)
-            win4_match = re.search(r"!!! Player (\d) wins with 4 in a row", line)
-            if win4_match:
-                game_winner = int(win4_match.group(1))
-                game_win_type = "4-in-a-row"
-                
-            # 6. Detect Win (Last Standing)
-            win_last_match = re.search(r"Player (\d) wins as the last player standing", line)
-            if win_last_match:
-                game_winner = int(win_last_match.group(1))
-                game_win_type = "Last Standing"
-                
-            # 7. Detect Draw
-            if "Game is a Draw" in line:
-                game_winner = "Draw"
-                game_win_type = "Draw"
+                # 1. Detect Turn
+                turn_match = re.search(r"Move \d+: Player (\d)", line)
+                if turn_match:
+                    current_player = int(turn_match.group(1))
+                    
+                # 2. Detect Estimated Winrate
+                wr_match = re.search(r"Estimated Winrate: ([\d\.]+)%", line)
+                if wr_match and current_player:
+                    wr = float(wr_match.group(1))
+                    est_winrates[current_player].append(wr)
+                    
+                    # Check for drop
+                    if current_player in player_last_wr:
+                        old_wr = player_last_wr[current_player]
+                        diff = wr - old_wr
+                        if abs(diff) > DROP_THRESHOLD:
+                            # Found a big drop
+                            context = move_history[-3:] if len(move_history) >= 3 else move_history
+                            blunders.append({
+                                'seed': seed,
+                                'move_idx': moves_in_game,
+                                'player': current_player,
+                                'old': old_wr,
+                                'new': wr,
+                                'diff': diff,
+                                'reason': "Shift",
+                                'context': context
+                            })
+                    
+                    player_last_wr[current_player] = wr
 
-        # End of game processing
-        if game_winner is not None:
-            winners.append(game_winner)
-            win_types.append(game_win_type)
-            game_lengths.append(moves_in_game)
+                # 3. Detect Move Choice
+                # "Player 1 chooses A1"
+                move_match = re.search(r"Player (\d) chooses ([A-H][1-8])", line)
+                if move_match:
+                    p_id = int(move_match.group(1))
+                    mv = move_match.group(2)
+                    move_history.append(f"P{p_id}:{mv}")
+                    moves_in_game += 1
+                    
+                # 4. Detect Elimination (Loss)
+                elim_match = re.search(r"Oops! Player (\d) made 3 in a row", line)
+                if elim_match:
+                    eliminated_player = int(elim_match.group(1))
+                    eliminations[eliminated_player] += 1
+                    
+                    # Record elimination as drop to 0
+                    if eliminated_player in player_last_wr:
+                        old_wr = player_last_wr[eliminated_player]
+                        diff = 0.0 - old_wr
+                        if abs(diff) > DROP_THRESHOLD:
+                            context = move_history[-3:]
+                            blunders.append({
+                                'seed': seed,
+                                'move_idx': moves_in_game,
+                                'player': eliminated_player,
+                                'old': old_wr,
+                                'new': 0.0,
+                                'diff': diff,
+                                'reason': "Elimination",
+                                'context': context
+                            })
+                    
+                # 5. Detect Win (4-in-a-row)
+                win4_match = re.search(r"!!! Player (\d) wins with 4 in a row", line)
+                if win4_match:
+                    game_winner = int(win4_match.group(1))
+                    game_win_type = "4-in-a-row"
+                    
+                # 6. Detect Win (Last Standing)
+                win_last_match = re.search(r"Player (\d) wins as the last player standing", line)
+                if win_last_match:
+                    game_winner = int(win_last_match.group(1))
+                    game_win_type = "Last Standing"
+                    
+                # 7. Detect Draw
+                if "Game is a Draw" in line:
+                    game_winner = "Draw"
+                    game_win_type = "Draw"
+
+            # End of game processing
+            if game_winner is not None:
+                winners.append(game_winner)
+                win_types.append(game_win_type)
+                game_lengths.append(moves_in_game)
 
     # --- Reporting ---
     print("\n" + "="*40)
     print(f"ANALYSIS REPORT: {len(winners)} Games Completed")
     print("="*40)
     
+    if not winners:
+        print("No valid games found.")
+        return
+
     # 1. Win Statistics
     print("\n🏆 Win Statistics:")
     win_counts = Counter(winners)
@@ -187,9 +198,7 @@ def analyze_squava_log(filepath):
         print("  None detected.")
     else:
         for b in blunders:
-            print(f"  Game {b['game']} Move {b['move_idx']} (P{b['player']}): {b['old']:.1f}% -> {b['new']:.1f}% ({b['diff']:.1f}%) [{b['reason']}]")
-            if b.get('seed'):
-                print(f"    Seed: {b['seed']}")
+            print(f"  Seed {b['seed']} Move {b['move_idx']} (P{b['player']}): {b['old']:.1f}% -> {b['new']:.1f}% ({b['diff']:.1f}%) [{b['reason']}]")
             print(f"    Context: {', '.join(b['context'])}")
 
     # 6. Confidence
@@ -200,8 +209,17 @@ def analyze_squava_log(filepath):
             print(f"  Player {p}: {avg_wr:.1f}%")
 
 if __name__ == "__main__":
-    import sys
-    filename = "log_900k"
-    if len(sys.argv) > 1:
-        filename = sys.argv[1]
-    analyze_squava_log(filename)
+    if len(sys.argv) < 2:
+        print("Usage: python analyze_log.py <log_file_pattern>")
+        sys.exit(1)
+    
+    # Handle wildcards if the shell didn't expand them (e.g. Windows, or quoted)
+    files = []
+    for arg in sys.argv[1:]:
+        expanded = glob.glob(arg)
+        if expanded:
+            files.extend(expanded)
+        else:
+            files.append(arg)
+            
+    analyze_squava_logs(files)
