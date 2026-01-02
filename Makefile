@@ -37,3 +37,4 @@ profile: build
 
 analyze:
 	go tool pprof -list RunSimulation cpu.prof
+	go tool pprof -list Select cpu.prof
