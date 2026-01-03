@@ -32,24 +32,28 @@ func randIntn(n int) int {
 	return int((uint64(uint32(xrand())) * uint64(n)) >> 32)
 }
 
-var (
-	zobristP      [3][64]uint64
-	zobristTurn   [3]uint64
-	zobristActive [256]uint64
-)
+type ZobristTable struct {
+	piece  [3][64]uint64
+	turn   [3]uint64
+	active [256]uint64
+}
 
-func initZobrist() {
+func NewZobristTable() *ZobristTable {
+	z := &ZobristTable{}
 	r := rand.New(rand.NewSource(42))
 	for p := 0; p < 3; p++ {
 		for i := 0; i < 64; i++ {
-			zobristP[p][i] = r.Uint64()
+			z.piece[p][i] = r.Uint64()
 		}
-		zobristTurn[p] = r.Uint64()
+		z.turn[p] = r.Uint64()
 	}
 	for i := 0; i < 256; i++ {
-		zobristActive[i] = r.Uint64()
+		z.active[i] = r.Uint64()
 	}
+	return z
 }
+
+var zobrist *ZobristTable
 
 const (
 	BoardSize = 8
@@ -297,24 +301,37 @@ var (
 	nextPlayerTable [3][256]int8
 )
 
-type Zobrist struct{}
-
-func (Zobrist) Move(h uint64, pID int, idx int) uint64 {
-	return h ^ zobristP[pID][idx]
+func (z *ZobristTable) Move(h uint64, pID int, idx int) uint64 {
+	return h ^ z.piece[pID][idx]
 }
 
-func (Zobrist) SwapTurn(h uint64, oldPID, newPID int) uint64 {
+func (z *ZobristTable) SwapTurn(h uint64, oldPID, newPID int) uint64 {
 	if newPID == -1 {
-		return h ^ zobristTurn[oldPID]
+		return h ^ z.turn[oldPID]
 	}
-	return h ^ zobristTurn[oldPID] ^ zobristTurn[newPID]
+	return h ^ z.turn[oldPID] ^ z.turn[newPID]
 }
 
-func (Zobrist) UpdateMask(h uint64, oldMask, newMask uint8) uint64 {
-	return h ^ zobristActive[oldMask] ^ zobristActive[newMask]
+func (z *ZobristTable) UpdateMask(h uint64, oldMask, newMask uint8) uint64 {
+	return h ^ z.active[oldMask] ^ z.active[newMask]
 }
 
-var zobrist Zobrist
+func (z *ZobristTable) ComputeHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
+	var h uint64
+	if playerToMoveID >= 0 && playerToMoveID < 3 {
+		h = z.turn[playerToMoveID]
+	}
+	h ^= z.active[activeMask]
+	for p := 0; p < 3; p++ {
+		pBoard := uint64(board.P[p])
+		for pBoard != 0 {
+			idx := bits.TrailingZeros64(pBoard)
+			h ^= z.piece[p][idx]
+			pBoard &= pBoard - 1
+		}
+	}
+	return h
+}
 
 func init() {
 	for i := 0; i < 256; i++ {
@@ -327,7 +344,7 @@ func init() {
 		}
 	}
 
-	initZobrist()
+	zobrist = NewZobristTable()
 	for p := 0; p < 3; p++ {
 		for m := 0; m < 256; m++ {
 			nextPlayerTable[p][m] = -1
@@ -375,7 +392,7 @@ func NewGameState(board Board, playerID int, activeMask uint8) GameState {
 		ActiveMask: activeMask,
 		WinnerID:   -1,
 	}
-	gs.Hash = ZobristHash(board, playerID, activeMask)
+	gs.Hash = zobrist.ComputeHash(board, playerID, activeMask)
 	gs.InitThreats()
 	return gs
 }
@@ -564,23 +581,6 @@ func NewMCTSPlayer(name, symbol string, id int, iterations int) *MCTSPlayer {
 func (m *MCTSPlayer) Name() string   { return m.info.name }
 func (m *MCTSPlayer) Symbol() string { return m.info.symbol }
 func (m *MCTSPlayer) ID() int        { return m.info.id }
-
-func ZobristHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
-	var h uint64
-	if playerToMoveID >= 0 && playerToMoveID < 3 {
-		h = zobristTurn[playerToMoveID]
-	}
-	h ^= zobristActive[activeMask]
-	for p := 0; p < 3; p++ {
-		pBoard := uint64(board.P[p])
-		for pBoard != 0 {
-			idx := bits.TrailingZeros64(pBoard)
-			h ^= zobristP[p][idx]
-			pBoard &= pBoard - 1
-		}
-	}
-	return h
-}
 
 func (m *MCTSPlayer) Search(gs GameState) (int, int) {
 	root := tt.Lookup(&gs)

@@ -178,18 +178,18 @@ func TestZobristConsistency(t *testing.T) {
 	board.Set(0, 0)
 	board.Set(1, 1)
 	board.Set(2, 2)
-	h1 := ZobristHash(board, 0, 0x07)
-	h2 := ZobristHash(board, 0, 0x07)
+	h1 := zobrist.ComputeHash(board, 0, 0x07)
+	h2 := zobrist.ComputeHash(board, 0, 0x07)
 	if h1 != h2 {
 		t.Errorf("Hash mismatch for identical states")
 	}
-	h3 := ZobristHash(board, 1, 0x07)
+	h3 := zobrist.ComputeHash(board, 1, 0x07)
 	if h1 == h3 {
 		t.Errorf("Hash collision for different turn index")
 	}
 	board2 := board
 	board2.Set(3, 0)
-	h4 := ZobristHash(board2, 0, 0x07)
+	h4 := zobrist.ComputeHash(board2, 0, 0x07)
 	if h1 == h4 {
 		t.Errorf("Hash collision for different board state")
 	}
@@ -367,7 +367,7 @@ func TestZobristIncrementalFuzz(t *testing.T) {
 		gs := NewGameState(board, currentID, activeMask)
 		gs.ApplyMove(move)
 		// 5. Verification: Compute Hash from Scratch on New State
-		refHash := ZobristHash(gs.Board, gs.PlayerID, gs.ActiveMask)
+		refHash := zobrist.ComputeHash(gs.Board, gs.PlayerID, gs.ActiveMask)
 		if gs.Hash != refHash {
 			t.Errorf("Iteration %d: Hash mismatch.\nState: %+v\nIncremental: %016x\nReference:   %016x",
 				i, gs, gs.Hash, refHash)
@@ -881,22 +881,22 @@ func TestTranspositionTableMethods(t *testing.T) {
 func TestZobristHelper(t *testing.T) {
 	h := uint64(100)
 	h2 := zobrist.Move(h, 0, 10)
-	if h2 != h^zobristP[0][10] {
+	if h2 != h^zobrist.piece[0][10] {
 		t.Errorf("Zobrist.Move failed")
 	}
 
 	h3 := zobrist.SwapTurn(h, 0, 1)
-	if h3 != h^zobristTurn[0]^zobristTurn[1] {
+	if h3 != h^zobrist.turn[0]^zobrist.turn[1] {
 		t.Errorf("Zobrist.SwapTurn failed for non-terminal")
 	}
 
 	h4 := zobrist.SwapTurn(h, 0, -1)
-	if h4 != h^zobristTurn[0] {
+	if h4 != h^zobrist.turn[0] {
 		t.Errorf("Zobrist.SwapTurn failed for terminal")
 	}
 
 	h5 := zobrist.UpdateMask(h, 0x07, 0x03)
-	if h5 != h^zobristActive[0x07]^zobristActive[0x03] {
+	if h5 != h^zobrist.active[0x07]^zobrist.active[0x03] {
 		t.Errorf("Zobrist.UpdateMask failed")
 	}
 }
