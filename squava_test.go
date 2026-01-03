@@ -912,3 +912,49 @@ func TestGameRulesHelper(t *testing.T) {
 		t.Errorf("IsTerminal should be false for multi-player mask 0x03")
 	}
 }
+
+func TestPdep(t *testing.T) {
+	// PDEP mask, src -> spreads bits of src into mask
+	// In our code: pdep(1<<k, v)
+	// src = 1<<k, mask = v
+	// This should return a uint64 with only the k-th set bit of v set.
+
+	tests := []struct {
+		v    uint64
+		k    int
+		want uint64
+	}{
+		{0b101010, 0, 1 << 1},
+		{0b101010, 1, 1 << 3},
+		{0b101010, 2, 1 << 5},
+		{0b111, 0, 1 << 0},
+		{0b111, 1, 1 << 1},
+		{0b111, 2, 1 << 2},
+		{0x8000000000000001, 0, 1 << 0},
+		{0x8000000000000001, 1, 1 << 63},
+	}
+
+	for _, tc := range tests {
+		got := pdep(uint64(1)<<uint(tc.k), tc.v)
+		if got != tc.want {
+			t.Errorf("pdep(1<<%d, %b) = %b, want %b", tc.k, tc.v, got, tc.want)
+		}
+	}
+}
+
+func TestSelectBit64(t *testing.T) {
+	v := uint64(0b101010)
+	// k=0 -> bit 1
+	// k=1 -> bit 3
+	// k=2 -> bit 5
+
+	if got := SelectBit64(v, 0); got != 1 {
+		t.Errorf("SelectBit64(0b101010, 0) = %d, want 1", got)
+	}
+	if got := SelectBit64(v, 1); got != 3 {
+		t.Errorf("SelectBit64(0b101010, 1) = %d, want 3", got)
+	}
+	if got := SelectBit64(v, 2); got != 5 {
+		t.Errorf("SelectBit64(0b101010, 2) = %d, want 5", got)
+	}
+}
