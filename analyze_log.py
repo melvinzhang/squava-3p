@@ -108,45 +108,48 @@ def analyze_squava_logs(filepaths):
                     move_history.append(f"P{p_id}:{mv}")
                     moves_in_game += 1
                     
-                # 4. Detect Elimination (Loss)
-                elim_match = re.search(r"Oops! Player (\d) made 3 in a row", line)
-                if elim_match:
-                    eliminated_player = int(elim_match.group(1))
-                    eliminations[eliminated_player] += 1
+                # 4. Detect Result (Win/Elimination/Draw)
+                result_match = re.search(r"Result: (.*)", line)
+                if result_match:
+                    content = result_match.group(1)
                     
-                    # Record elimination as drop to 0
-                    if eliminated_player in player_last_wr:
-                        old_wr = player_last_wr[eliminated_player]
-                        diff = 0.0 - old_wr
-                        if abs(diff) > DROP_THRESHOLD:
-                            context = move_history[-3:]
-                            blunders.append({
-                                'seed': seed,
-                                'move_idx': current_move_num,
-                                'player': eliminated_player,
-                                'old': old_wr,
-                                'new': 0.0,
-                                'diff': diff,
-                                'reason': "Elimination",
-                                'context': context
-                            })
-                    
-                # 5. Detect Win (4-in-a-row)
-                win4_match = re.search(r"!!! Player (\d) wins with 4 in a row", line)
-                if win4_match:
-                    game_winner = int(win4_match.group(1))
-                    game_win_type = "4-in-a-row"
-                    
-                # 6. Detect Win (Last Standing)
-                win_last_match = re.search(r"Player (\d) wins as the last player standing", line)
-                if win_last_match:
-                    game_winner = int(win_last_match.group(1))
-                    game_win_type = "Last Standing"
-                    
-                # 7. Detect Draw
-                if "Game is a Draw" in line:
-                    game_winner = "Draw"
-                    game_win_type = "Draw"
+                    if "Draw" in content:
+                        game_winner = "Draw"
+                        game_win_type = "Draw"
+                        
+                    elif "Wins" in content:
+                        # e.g. "Player 1 Wins (4-in-a-row)"
+                        p_match = re.search(r"Player (\d)", content)
+                        type_match = re.search(r"\((.*)\)", content)
+                        
+                        if p_match:
+                            game_winner = int(p_match.group(1))
+                        if type_match:
+                            game_win_type = type_match.group(1)
+                            
+                    elif "Eliminated" in content:
+                        # e.g. "Player 1 Eliminated (3-in-a-row)"
+                        p_match = re.search(r"Player (\d)", content)
+                        if p_match:
+                            eliminated_player = int(p_match.group(1))
+                            eliminations[eliminated_player] += 1
+                            
+                            # Record elimination as drop to 0
+                            if eliminated_player in player_last_wr:
+                                old_wr = player_last_wr[eliminated_player]
+                                diff = 0.0 - old_wr
+                                if abs(diff) > DROP_THRESHOLD:
+                                    context = move_history[-3:]
+                                    blunders.append({
+                                        'seed': seed,
+                                        'move_idx': current_move_num,
+                                        'player': eliminated_player,
+                                        'old': old_wr,
+                                        'new': 0.0,
+                                        'diff': diff,
+                                        'reason': "Elimination",
+                                        'context': context
+                                    })
 
             # End of game processing
             if game_winner is not None:
