@@ -1012,7 +1012,12 @@ func (g *SquavaGame) Run() {
 		if ok {
 			g.PrintBoard()
 			if winnerID != -1 {
-				fmt.Printf("!!! %s wins! !!!\n", g.GetPlayer(winnerID).Name())
+				isWin, _ := CheckBoard(g.gs.Board.P[winnerID])
+				if isWin {
+					fmt.Printf("!!! %s wins with 4 in a row\n", g.GetPlayer(winnerID).Name())
+				} else {
+					fmt.Printf("%s wins as the last player standing\n", g.GetPlayer(winnerID).Name())
+				}
 			} else {
 				fmt.Println("Board full! Game is a Draw.")
 			}
