@@ -404,7 +404,20 @@ func (gs GameState) IsTerminal() (int, bool) {
 	if bits.OnesCount8(gs.ActiveMask) == 1 {
 		return bits.TrailingZeros8(gs.ActiveMask), true
 	}
+	if gs.Board.Occupied == Bitboard(Full) {
+		return -1, true
+	}
 	return -1, false
+}
+
+func (gs GameState) ActiveIDs() []int {
+	ids := make([]int, 0, 3)
+	for i := 0; i < 3; i++ {
+		if (gs.ActiveMask & (1 << uint(i))) != 0 {
+			ids = append(ids, i)
+		}
+	}
+	return ids
 }
 
 func (gs GameState) GetBestMoves() Bitboard {
@@ -533,7 +546,7 @@ func (m *MCTSPlayer) Search(gs GameState) (int, int) {
 
 		var result [3]float32
 		if winnerID, ok := leaf.IsTerminal(); ok {
-			result = ScoreWin(winnerID)
+			result = ScoreTerminal(leaf.ActiveMask, winnerID)
 		} else {
 			var s int
 			result, s, _ = RunSimulation(leaf.GameState)
@@ -838,13 +851,20 @@ func ScoreDraw(mask uint8) [3]float32 {
 	return res
 }
 
+func ScoreTerminal(activeMask uint8, winnerID int) [3]float32 {
+	if winnerID != -1 {
+		return ScoreWin(winnerID)
+	}
+	return ScoreDraw(activeMask)
+}
+
 // --- Simulation Logic ---
 func RunSimulation(gs GameState) ([3]float32, int, Board) {
 	steps := 0
 	for {
 		steps++
 		if winnerID, ok := gs.IsTerminal(); ok {
-			return ScoreWin(winnerID), steps, gs.Board
+			return ScoreTerminal(gs.ActiveMask, winnerID), steps, gs.Board
 		}
 
 		moves := gs.GetBestMoves()
@@ -859,34 +879,27 @@ func RunSimulation(gs GameState) ([3]float32, int, Board) {
 
 // --- Game Engine ---
 type SquavaGame struct {
-	board   Board
+	gs      GameState
 	players []Player
-	turnIdx int
 }
 
 func NewSquavaGame() *SquavaGame {
-	return &SquavaGame{}
+	return &SquavaGame{
+		gs: GameState{WinnerID: -1},
+	}
 }
+
 func (g *SquavaGame) AddPlayer(p Player) {
 	g.players = append(g.players, p)
 }
 
-func (g *SquavaGame) ActiveIDs() []int {
-	activeIDs := make([]int, len(g.players))
-	for i, p := range g.players {
-		activeIDs[i] = p.ID()
+func (g *SquavaGame) GetPlayer(id int) Player {
+	for _, p := range g.players {
+		if p.ID() == id {
+			return p
+		}
 	}
-	return activeIDs
-}
-
-func (g *SquavaGame) RemovePlayer(idx int) bool {
-	player := g.players[idx]
-	fmt.Printf("Oops! %s made 3 in a row and is eliminated!\n", player.Name())
-	g.players = append(g.players[:idx], g.players[idx+1:]...)
-	if g.turnIdx >= len(g.players) {
-		g.turnIdx = 0
-	}
-	return len(g.players) == 1
+	return nil
 }
 
 func (g *SquavaGame) PrintBoard() {
@@ -901,11 +914,11 @@ func (g *SquavaGame) PrintBoard() {
 			symbol := "."
 			idx := r*8 + c
 			mask := Bitboard(uint64(1) << idx)
-			if (g.board.P[0] & mask) != 0 {
+			if (g.gs.Board.P[0] & mask) != 0 {
 				symbol = "X"
-			} else if (g.board.P[1] & mask) != 0 {
+			} else if (g.gs.Board.P[1] & mask) != 0 {
 				symbol = "O"
-			} else if (g.board.P[2] & mask) != 0 {
+			} else if (g.gs.Board.P[2] & mask) != 0 {
 				symbol = "Z"
 			}
 			fmt.Printf("%s ", symbol)
@@ -919,19 +932,29 @@ func (g *SquavaGame) Run() {
 	fmt.Printf("Random Seed: %d\n", xorState)
 	fmt.Println("Board Size: 8x8")
 	fmt.Println("Rules: 4-in-a-row wins. 3-in-a-row loses.")
+
+	activeMask := uint8(0)
+	for _, p := range g.players {
+		activeMask |= 1 << uint(p.ID())
+	}
+	g.gs.ActiveMask = activeMask
+	g.gs.PlayerID = g.players[0].ID()
+	g.gs.Hash = ZobristHash(g.gs.Board, g.gs.PlayerID, g.gs.ActiveMask)
+
 	moveCount := 1
 	for {
-		if len(g.players) == 0 {
-			fmt.Println("All players eliminated? Draw.")
-			break
-		}
-		if len(g.players) == 1 {
+		winnerID, terminal := g.gs.IsTerminal()
+		if terminal {
 			g.PrintBoard()
-			fmt.Printf("%s wins as the last player standing!\n", g.players[0].Name())
-			break
+			if winnerID != -1 {
+				fmt.Printf("!!! %s wins! !!!\n", g.GetPlayer(winnerID).Name())
+			} else {
+				fmt.Println("Board full! Game is a Draw.")
+			}
+			return
 		}
-		currentPlayer := g.players[g.turnIdx]
 
+		currentPlayer := g.GetPlayer(g.gs.PlayerID)
 		g.PrintBoard()
 		fmt.Printf("Move %d: %s (%s)\n", moveCount, currentPlayer.Name(), currentPlayer.Symbol())
 
@@ -939,40 +962,36 @@ func (g *SquavaGame) Run() {
 			fmt.Printf("%s is thinking...\n", currentPlayer.Name())
 		}
 
-		move := currentPlayer.GetMove(g.board, g.ActiveIDs(), g.turnIdx)
+		activeIDs := g.gs.ActiveIDs()
+		var turnIdx int
+		for i, id := range activeIDs {
+			if id == g.gs.PlayerID {
+				turnIdx = i
+				break
+			}
+		}
+
+		move := currentPlayer.GetMove(g.gs.Board, activeIDs, turnIdx)
 
 		if _, ok := currentPlayer.(*MCTSPlayer); ok {
 			fmt.Printf("%s chooses %c%d\n", currentPlayer.Name(), int(move.c)+65, int(move.r)+1)
 		}
-		g.board.Set(move.ToIndex(), currentPlayer.ID())
-		moveCount++
-		isWin, isLoss := CheckBoard(g.board.GetPlayerBoard(currentPlayer.ID()))
-		if isWin {
-			g.PrintBoard()
-			fmt.Printf("!!! %s wins with 4 in a row! !!!\n", currentPlayer.Name())
-			return
-		}
-		if isLoss {
-			g.PrintBoard()
-			if g.RemovePlayer(g.turnIdx) {
-				g.PrintBoard()
-				fmt.Printf("%s wins as the last player standing!\n", g.players[0].Name())
-				return
-			}
 
-			if g.board.Occupied == Bitboard(Full) {
-				g.PrintBoard()
-				fmt.Println("Board full! Game is a Draw between remaining players.")
-				return
+		prevMask := g.gs.ActiveMask
+		g.gs = g.gs.ApplyMove(move)
+		moveCount++
+
+		if g.gs.ActiveMask != prevMask {
+			// Find who was eliminated
+			eliminatedID := -1
+			for i := 0; i < 3; i++ {
+				if (prevMask&(1<<uint(i))) != 0 && (g.gs.ActiveMask&(1<<uint(i))) == 0 {
+					eliminatedID = i
+					break
+				}
 			}
-			continue
+			fmt.Printf("Oops! %s made 3 in a row and is eliminated!\n", g.GetPlayer(eliminatedID).Name())
 		}
-		if g.board.Occupied == Bitboard(Full) {
-			g.PrintBoard()
-			fmt.Println("Board full! Game is a Draw.")
-			return
-		}
-		g.turnIdx = (g.turnIdx + 1) % len(g.players)
 	}
 }
 func main() {

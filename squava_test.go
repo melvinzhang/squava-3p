@@ -289,7 +289,7 @@ func referenceRunSimulation(board Board, activeMask uint8, currentID int) ([3]fl
 	gs := GameState{Board: board, ActiveMask: activeMask, PlayerID: currentID, WinnerID: -1}
 	for {
 		if winnerID, ok := gs.IsTerminal(); ok {
-			return ScoreWin(winnerID), gs.Board
+			return ScoreTerminal(gs.ActiveMask, winnerID), gs.Board
 		}
 
 		moves := gs.GetBestMoves()
