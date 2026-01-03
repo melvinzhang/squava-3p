@@ -107,6 +107,13 @@ func (b *Board) Set(idx int, pID int) {
 	b.P[pID] |= mask
 	b.Occupied |= mask
 }
+
+func (b *Board) Move(pID int, idx int) Bitboard {
+	mask := Bitboard(uint64(1) << uint(idx))
+	b.P[pID] |= mask
+	b.Occupied |= mask
+	return mask
+}
 func (b *Board) GetPlayerBoard(pID int) Bitboard {
 	return b.P[pID]
 }
@@ -695,20 +702,12 @@ func (n *MCGSNode) SyncEdge(idx int, child *MCGSNode) {
 }
 
 func (n *MCGSNode) PopUntriedMove() (Move, bool) {
-	if n.untriedMoves == 0 {
+	moveIdx := PickRandomBit(n.untriedMoves)
+	if moveIdx == -1 {
 		return Move{}, false
 	}
-	count := bits.OnesCount64(uint64(n.untriedMoves))
-	var moveIdx int
-	if count == 1 {
-		moveIdx = bits.TrailingZeros64(uint64(n.untriedMoves))
-	} else {
-		hi, _ := bits.Mul64(xrand(), uint64(count))
-		moveIdx = SelectBit64(uint64(n.untriedMoves), int(hi))
-	}
-	move := MoveFromIndex(moveIdx)
-	n.untriedMoves &= ^(Bitboard(1) << moveIdx)
-	return move, true
+	n.untriedMoves &= ^(Bitboard(1) << uint(moveIdx))
+	return MoveFromIndex(moveIdx), true
 }
 
 type MCGSEdge struct {
@@ -781,6 +780,50 @@ func SelectBit64(v uint64, k int) int {
 	return bits.TrailingZeros64(pdep(uint64(1)<<uint(k), v))
 }
 
+func PickRandomBit(bb Bitboard) int {
+	count := bits.OnesCount64(uint64(bb))
+	if count == 0 {
+		return -1
+	}
+	if count == 1 {
+		return bits.TrailingZeros64(uint64(bb))
+	}
+	hi, _ := bits.Mul64(xrand(), uint64(count))
+	return SelectBit64(uint64(bb), int(hi))
+}
+
+func ScoreWin(winnerID int) [3]float32 {
+	var res [3]float32
+	if winnerID >= 0 && winnerID < 3 {
+		res[winnerID] = 1.0
+	}
+	return res
+}
+
+func ScoreDraw(mask uint8) [3]float32 {
+	var res [3]float32
+	count := bits.OnesCount8(mask)
+	if count == 0 {
+		return res
+	}
+	score := 1.0 / float32(count)
+	for p := 0; p < 3; p++ {
+		if (mask & (1 << uint(p))) != 0 {
+			res[p] = score
+		}
+	}
+	return res
+}
+
+func ClearThreats(wins, loses *[3]Bitboard, mask Bitboard, activeMask uint8) {
+	for p := 0; p < 3; p++ {
+		if (activeMask & (1 << uint(p))) != 0 {
+			wins[p] &= ^mask
+			loses[p] &= ^mask
+		}
+	}
+}
+
 func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float32, int, Board) {
 	simBoard := board
 	simMask := activeMask
@@ -800,88 +843,47 @@ func RunSimulation(board Board, activeMask uint8, currentID int) ([3]float32, in
 	for {
 		steps++
 		if winnerID, ok := rules.IsTerminal(simMask); ok {
-			var res [3]float32
-			res[winnerID] = 1.0
-			return res, steps, simBoard
+			return ScoreWin(winnerID), steps, simBoard
 		}
 
-		myWins := allWins[curr]
-		if myWins != 0 {
-			var res [3]float32
-			res[curr] = 1.0
-			return res, steps, simBoard
+		if allWins[curr] != 0 {
+			return ScoreWin(curr), steps, simBoard
 		}
 
 		nextP := int(nextPlayerTable[curr][simMask])
 		nextWins := allWins[nextP]
-		myLoses := allLoses[curr]
 
 		var moves Bitboard
 		mustCheckLoss := true
 		if nextWins != 0 {
 			moves = nextWins
+		} else if safe := empty & ^allLoses[curr]; safe != 0 {
+			moves = safe
+			mustCheckLoss = false
 		} else {
-			moves = empty & ^myLoses
-			if moves != 0 {
-				mustCheckLoss = false
-			} else {
-				moves = empty
-			}
+			moves = empty
 		}
 
-		if moves == 0 {
-			var res [3]float32
-			count := bits.OnesCount8(simMask)
-			score := 1.0 / float32(count)
-			for p := 0; p < 3; p++ {
-				if (simMask & (1 << uint(p))) != 0 {
-					res[p] = score
-				}
-			}
-			return res, steps, simBoard
+		idx := PickRandomBit(moves)
+		if idx == -1 {
+			return ScoreDraw(simMask), steps, simBoard
 		}
 
-		var selectedIdx int
-		count := bits.OnesCount64(uint64(moves))
-		if count == 1 {
-			selectedIdx = bits.TrailingZeros64(uint64(moves))
-		} else {
-			hi, _ := bits.Mul64(xrand(), uint64(count))
-			selectedIdx = SelectBit64(uint64(moves), int(hi))
-		}
-
-		mask := Bitboard(uint64(1) << selectedIdx)
-		simBoard.Occupied |= mask
-		simBoard.P[curr] |= mask
+		mask := simBoard.Move(curr, idx)
 		empty &= ^mask
 
 		if mustCheckLoss && (allLoses[curr]&mask) != 0 {
 			newMask, winnerID := rules.ResolveLoss(simMask, curr)
-			simMask = newMask
 			if winnerID != -1 {
-				var res [3]float32
-				res[winnerID] = 1.0
-				return res, steps, simBoard
+				return ScoreWin(winnerID), steps, simBoard
 			}
+			simMask = newMask
 			curr = int(nextPlayerTable[curr][simMask])
-			// Update others and skip recalculation for eliminated curr
-			for p := 0; p < 3; p++ {
-				if (simMask & (1 << uint(p))) != 0 {
-					allWins[p] &= ^mask
-					allLoses[p] &= ^mask
-				}
-			}
+			ClearThreats(&allWins, &allLoses, mask, simMask)
 			continue
 		}
 
-		// Update others
-		for p := 0; p < 3; p++ {
-			if p != curr && (simMask&(1<<uint(p))) != 0 {
-				allWins[p] &= ^mask
-				allLoses[p] &= ^mask
-			}
-		}
-		// Recalculate for curr
+		ClearThreats(&allWins, &allLoses, mask, simMask & ^(1 << uint(curr)))
 		allWins[curr], allLoses[curr] = GetWinsAndLosses(simBoard.P[curr], empty)
 		curr = nextP
 	}
