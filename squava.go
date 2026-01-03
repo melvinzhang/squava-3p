@@ -534,7 +534,7 @@ func ZobristHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
 	return h
 }
 
-func (m *MCTSPlayer) Search(gs GameState) int {
+func (m *MCTSPlayer) Search(gs GameState) (int, int) {
 	root := tt.Lookup(gs)
 	if root == nil {
 		root = NewMCGSNode(gs)
@@ -542,6 +542,7 @@ func (m *MCTSPlayer) Search(gs GameState) int {
 	}
 	m.root = root
 
+	initialN := root.N
 	totalSteps := 0
 	for root.N < m.iterations {
 		path := m.Select(root)
@@ -557,7 +558,7 @@ func (m *MCTSPlayer) Search(gs GameState) int {
 		}
 		m.Backprop(path, result)
 	}
-	return totalSteps
+	return totalSteps, root.N - initialN
 }
 
 type MoveStat struct {
@@ -566,14 +567,14 @@ type MoveStat struct {
 	winrate float32
 }
 
-func (m *MCTSPlayer) PrintStats(myID int, totalSteps int, elapsed time.Duration) {
+func (m *MCTSPlayer) PrintStats(myID int, totalSteps, rollouts int, elapsed time.Duration) {
 	if !m.Verbose {
 		return
 	}
 	root := m.root
 	if elapsed.Seconds() > 0 {
 		sps := float64(totalSteps) / elapsed.Seconds()
-		fmt.Printf("Rollouts: %d, Steps: %d, Time: %v, SPS: %.2f\n", root.N, totalSteps, elapsed, sps)
+		fmt.Printf("Rollouts: %d, Steps: %d, Time: %v, SPS: %.2f\n", rollouts, totalSteps, elapsed, sps)
 	}
 	fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
 
@@ -616,10 +617,10 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 	gs := GameState{Board: board, Hash: rootHash, PlayerID: players[turnIdx], ActiveMask: activeMask, WinnerID: -1}
 
 	startTime := time.Now()
-	totalSteps := m.Search(gs)
+	totalSteps, rollouts := m.Search(gs)
 	elapsed := time.Since(startTime)
 
-	m.PrintStats(players[turnIdx], totalSteps, elapsed)
+	m.PrintStats(players[turnIdx], totalSteps, rollouts, elapsed)
 
 	bestVisits := -1
 	var bestMove Move
