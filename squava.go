@@ -24,14 +24,6 @@ func xrand() uint64 {
 	return xorState * 0x2545F4914F6CDD1D
 }
 
-func randIntn(n int) int {
-	if n <= 0 {
-		return 0
-	}
-	// Lemire's fast alternative to modulo for bounded random numbers
-	return int((uint64(uint32(xrand())) * uint64(n)) >> 32)
-}
-
 type ZobristTable struct {
 	piece  [3][64]uint64
 	turn   [3]uint64
