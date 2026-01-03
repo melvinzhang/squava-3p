@@ -125,6 +125,8 @@ func CheckBoard(bb Bitboard) (isWin, isLoss bool) {
 	return
 }
 
+// GetWinsAndLosses calculates win and loss bitboards.
+// This function is manually unrolled for performance.
 func GetWinsAndLosses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bitboard) {
 	b := uint64(bb)
 	e := uint64(empty)
@@ -411,6 +413,53 @@ type GameState struct {
 	WinnerID   int
 }
 
+func (gs GameState) NextPlayer() int {
+	return int(nextPlayerTable[gs.PlayerID][gs.ActiveMask])
+}
+
+func (gs GameState) IsTerminal() (int, bool) {
+	if gs.WinnerID != -1 {
+		return gs.WinnerID, true
+	}
+	return rules.IsTerminal(gs.ActiveMask)
+}
+
+func (gs GameState) GetBestMoves() Bitboard {
+	nextP := gs.NextPlayer()
+	threats := AnalyzeThreats(gs.Board, gs.PlayerID, nextP)
+	return GetBestMoves(gs.Board, threats)
+}
+
+func (gs GameState) ApplyMove(move Move) GameState {
+	newGS := gs
+	idx := move.ToIndex()
+	newGS.Board.Move(gs.PlayerID, idx)
+	newGS.Hash = zobrist.Move(gs.Hash, gs.PlayerID, idx)
+
+	isWin, isLoss := CheckBoard(newGS.Board.GetPlayerBoard(gs.PlayerID))
+	if isWin {
+		newGS.WinnerID = gs.PlayerID
+		newGS.PlayerID = -1
+		newGS.Hash = zobrist.SwapTurn(newGS.Hash, gs.PlayerID, -1)
+		return newGS
+	}
+	if isLoss {
+		newGS.ActiveMask, newGS.WinnerID = rules.ResolveLoss(gs.ActiveMask, gs.PlayerID)
+		newGS.Hash = zobrist.UpdateMask(newGS.Hash, gs.ActiveMask, newGS.ActiveMask)
+		if newGS.WinnerID != -1 {
+			newGS.PlayerID = -1
+			newGS.Hash = zobrist.SwapTurn(newGS.Hash, gs.PlayerID, -1)
+		} else {
+			newGS.PlayerID = getNextPlayer(gs.PlayerID, newGS.ActiveMask)
+			newGS.Hash = zobrist.SwapTurn(newGS.Hash, gs.PlayerID, newGS.PlayerID)
+		}
+		return newGS
+	}
+	newGS.PlayerID = gs.NextPlayer()
+	newGS.Hash = zobrist.SwapTurn(newGS.Hash, gs.PlayerID, newGS.PlayerID)
+	return newGS
+}
+
 type TTEntry struct {
 	hash uint64
 	node *MCGSNode
@@ -470,32 +519,22 @@ func ZobristHash(board Board, playerToMoveID int, activeMask uint8) uint64 {
 	return h
 }
 
-func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
-	activeMask := uint8(0)
-	for _, pID := range players {
-		activeMask |= 1 << uint(pID)
-	}
-	rootHash := ZobristHash(board, players[turnIdx], activeMask)
-	gs := GameState{Board: board, Hash: rootHash, PlayerID: players[turnIdx], ActiveMask: activeMask, WinnerID: -1}
+func (m *MCTSPlayer) Search(gs GameState) int {
 	root := tt.Lookup(gs)
-
 	if root == nil {
 		root = NewMCGSNode(gs)
-		tt.Store(rootHash, root)
+		tt.Store(gs.Hash, root)
 	}
 	m.root = root
 
-	startRollouts := root.N
-	startTime := time.Now()
 	totalSteps := 0
-
 	for root.N < m.iterations {
 		path := m.Select(root)
 		leaf := path[len(path)-1].Node
 
 		var result [3]float32
-		if leaf.WinnerID != -1 {
-			result[leaf.WinnerID] = 1.0
+		if winnerID, ok := leaf.IsTerminal(); ok {
+			result = ScoreWin(winnerID)
 		} else {
 			var s int
 			result, s, _ = RunSimulation(leaf.Board, leaf.ActiveMask, leaf.PlayerID)
@@ -503,28 +542,28 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 		}
 		m.Backprop(path, result)
 	}
+	return totalSteps
+}
 
-	elapsed := time.Since(startTime)
-	totalRollouts := root.N - startRollouts
-	if m.Verbose && elapsed.Seconds() > 0 {
+type MoveStat struct {
+	mv      Move
+	visits  int
+	winrate float32
+}
+
+func (m *MCTSPlayer) PrintStats(myID int, totalSteps int, elapsed time.Duration) {
+	if !m.Verbose {
+		return
+	}
+	root := m.root
+	if elapsed.Seconds() > 0 {
 		sps := float64(totalSteps) / elapsed.Seconds()
-		fmt.Printf("Rollouts: %d, Steps: %d, Time: %v, SPS: %.2f\n", totalRollouts, totalSteps, elapsed, sps)
+		fmt.Printf("Rollouts: %d, Steps: %d, Time: %v, SPS: %.2f\n", root.N, totalSteps, elapsed, sps)
 	}
+	fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
 
-	// Stats and Selection
-	myID := players[turnIdx]
-	if m.Verbose {
-		fmt.Printf("Estimated Winrate: %.2f%%\n", root.Q[myID]*100)
-	}
-	bestVisits := -1
-	var bestMove Move
-	// Sort moves by visits for cleaner output
-	type MoveStat struct {
-		mv      Move
-		visits  int
-		winrate float32
-	}
 	stats := []MoveStat{}
+	bestVisits := -1
 	for i := range root.EdgeDests {
 		mv := root.EdgeMoves[i]
 		visits := int(root.EdgeVisits[i])
@@ -532,7 +571,6 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 		stats = append(stats, MoveStat{mv, visits, q})
 		if visits > bestVisits {
 			bestVisits = visits
-			bestMove = mv
 		}
 	}
 	// Sort stats by visits descending
@@ -543,18 +581,41 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 			}
 		}
 	}
-	// Print top 5 moves
-	if m.Verbose {
-		fmt.Println("Top moves:")
-		limit := 5
-		if len(stats) < limit {
-			limit = len(stats)
-		}
-		for i := 0; i < limit; i++ {
-			s := stats[i]
-			fmt.Printf("  %c%d: Visits: %d, Winrate: %.2f%%\n", int(s.mv.c)+65, int(s.mv.r)+1, s.visits, s.winrate*100)
+	fmt.Println("Top moves:")
+	limit := 5
+	if len(stats) < limit {
+		limit = len(stats)
+	}
+	for i := 0; i < limit; i++ {
+		s := stats[i]
+		fmt.Printf("  %c%d: Visits: %d, Winrate: %.2f%%\n", int(s.mv.c)+65, int(s.mv.r)+1, s.visits, s.winrate*100)
+	}
+}
+
+func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
+	activeMask := uint8(0)
+	for _, pID := range players {
+		activeMask |= 1 << uint(pID)
+	}
+	rootHash := ZobristHash(board, players[turnIdx], activeMask)
+	gs := GameState{Board: board, Hash: rootHash, PlayerID: players[turnIdx], ActiveMask: activeMask, WinnerID: -1}
+
+	startTime := time.Now()
+	totalSteps := m.Search(gs)
+	elapsed := time.Since(startTime)
+
+	m.PrintStats(players[turnIdx], totalSteps, elapsed)
+
+	bestVisits := -1
+	var bestMove Move
+	for i := range m.root.EdgeDests {
+		visits := int(m.root.EdgeVisits[i])
+		if visits > bestVisits {
+			bestVisits = visits
+			bestMove = m.root.EdgeMoves[i]
 		}
 	}
+
 	if bestVisits == -1 {
 		// Fallback
 		nextID := getNextPlayer(players[turnIdx], activeMask)
@@ -580,13 +641,16 @@ func (m *MCTSPlayer) Select(root *MCGSNode) []PathStep {
 	m.path = append(m.path, PathStep{Node: root, EdgeIdx: -1})
 
 	curr := root
-	for curr.WinnerID == -1 {
+	for {
+		if _, terminal := curr.IsTerminal(); terminal {
+			break
+		}
 		// --- Expansion Phase ---
 		// If the current node has moves that haven't been added to the graph yet,
 		// pick one at random and expand the search.
 		if move, ok := curr.PopUntriedMove(); ok {
 			// Determine the new state and look it up in the Transposition Table.
-			state := SimulateStep(curr.Board, curr.ActiveMask, curr.PlayerID, move, curr.Hash)
+			state := curr.ApplyMove(move)
 
 			child := tt.Lookup(state)
 			isNew := child == nil
@@ -723,9 +787,8 @@ type MCGSEdge struct {
 
 func NewMCGSNode(gs GameState) *MCGSNode {
 	var untried Bitboard
-	if gs.WinnerID == -1 {
-		nextP := getNextPlayer(gs.PlayerID, gs.ActiveMask)
-		untried = GetBestMoves(gs.Board, AnalyzeThreats(gs.Board, gs.PlayerID, nextP))
+	if _, terminal := gs.IsTerminal(); !terminal {
+		untried = gs.GetBestMoves()
 	}
 	n := &MCGSNode{
 		GameState:    gs,
@@ -737,36 +800,6 @@ func (n *MCGSNode) Matches(gs GameState) bool {
 	return n.GameState == gs
 }
 
-// --- Simulation Logic ---
-func SimulateStep(board Board, activeMask uint8, currentID int, move Move, currentHash uint64) GameState {
-	newBoard := board
-	idx := move.ToIndex()
-	mask := Bitboard(uint64(1) << idx)
-	newBoard.P[currentID] |= mask
-	newBoard.Occupied |= mask
-
-	newHash := zobrist.Move(currentHash, currentID, idx)
-
-	isWin, isLoss := CheckBoard(newBoard.GetPlayerBoard(currentID))
-	if isWin {
-		newHash = zobrist.SwapTurn(newHash, currentID, -1)
-		return GameState{Board: newBoard, PlayerID: -1, ActiveMask: activeMask, WinnerID: currentID, Hash: newHash}
-	}
-	if isLoss {
-		newMask, winnerID := rules.ResolveLoss(activeMask, currentID)
-		newHash = zobrist.UpdateMask(newHash, activeMask, newMask)
-		if winnerID != -1 {
-			newHash = zobrist.SwapTurn(newHash, currentID, -1)
-			return GameState{Board: newBoard, PlayerID: -1, ActiveMask: newMask, WinnerID: winnerID, Hash: newHash}
-		}
-		nextID := getNextPlayer(currentID, newMask)
-		newHash = zobrist.SwapTurn(newHash, currentID, nextID)
-		return GameState{Board: newBoard, PlayerID: nextID, ActiveMask: newMask, WinnerID: -1, Hash: newHash}
-	}
-	nextID := getNextPlayer(currentID, activeMask)
-	newHash = zobrist.SwapTurn(newHash, currentID, nextID)
-	return GameState{Board: newBoard, PlayerID: nextID, ActiveMask: activeMask, WinnerID: -1, Hash: newHash}
-}
 func pdep(src, mask uint64) uint64
 
 func SelectBit64(v uint64, k int) int {
@@ -895,6 +928,25 @@ func NewSquavaGame() *SquavaGame {
 func (g *SquavaGame) AddPlayer(p Player) {
 	g.players = append(g.players, p)
 }
+
+func (g *SquavaGame) ActiveIDs() []int {
+	activeIDs := make([]int, len(g.players))
+	for i, p := range g.players {
+		activeIDs[i] = p.ID()
+	}
+	return activeIDs
+}
+
+func (g *SquavaGame) RemovePlayer(idx int) bool {
+	player := g.players[idx]
+	fmt.Printf("Oops! %s made 3 in a row and is eliminated!\n", player.Name())
+	g.players = append(g.players[:idx], g.players[idx+1:]...)
+	if g.turnIdx >= len(g.players) {
+		g.turnIdx = 0
+	}
+	return len(g.players) == 1
+}
+
 func (g *SquavaGame) PrintBoard() {
 	fmt.Print("   ")
 	for i := 0; i < BoardSize; i++ {
@@ -919,6 +971,7 @@ func (g *SquavaGame) PrintBoard() {
 		fmt.Println()
 	}
 }
+
 func (g *SquavaGame) Run() {
 	fmt.Println("Starting 3-Player Squava!")
 	fmt.Printf("Random Seed: %d\n", xorState)
@@ -940,16 +993,11 @@ func (g *SquavaGame) Run() {
 		g.PrintBoard()
 		fmt.Printf("Move %d: %s (%s)\n", moveCount, currentPlayer.Name(), currentPlayer.Symbol())
 
-		activeIDs := make([]int, len(g.players))
-		for i, p := range g.players {
-			activeIDs[i] = p.ID()
-		}
-
 		if _, ok := currentPlayer.(*MCTSPlayer); ok {
 			fmt.Printf("%s is thinking...\n", currentPlayer.Name())
 		}
 
-		move := currentPlayer.GetMove(g.board, activeIDs, g.turnIdx)
+		move := currentPlayer.GetMove(g.board, g.ActiveIDs(), g.turnIdx)
 
 		if _, ok := currentPlayer.(*MCTSPlayer); ok {
 			fmt.Printf("%s chooses %c%d\n", currentPlayer.Name(), int(move.c)+65, int(move.r)+1)
@@ -964,14 +1012,7 @@ func (g *SquavaGame) Run() {
 		}
 		if isLoss {
 			g.PrintBoard()
-			fmt.Printf("Oops! %s made 3 in a row and is eliminated!\n", currentPlayer.Name())
-			g.players = append(g.players[:g.turnIdx], g.players[g.turnIdx+1:]...)
-			if g.turnIdx >= len(g.players) {
-				g.turnIdx = 0
-			}
-
-			// Check if only one player remains BEFORE checking for a draw.
-			if len(g.players) == 1 {
+			if g.RemovePlayer(g.turnIdx) {
 				g.PrintBoard()
 				fmt.Printf("%s wins as the last player standing!\n", g.players[0].Name())
 				return
@@ -986,7 +1027,6 @@ func (g *SquavaGame) Run() {
 		}
 		if g.board.Occupied == Bitboard(Full) {
 			g.PrintBoard()
-			// If we reached here, len(g.players) must be > 1.
 			fmt.Println("Board full! Game is a Draw.")
 			return
 		}

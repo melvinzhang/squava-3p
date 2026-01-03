@@ -148,7 +148,8 @@ func TestSimulationLogic(t *testing.T) {
 	board.Set(1, 0)
 	h := ZobristHash(board, 0, 0x07)
 	// P0 moves to 2, creating 3-in-a-row
-	state := SimulateStep(board, 0x07, 0, MoveFromIndex(2), h)
+	gs := GameState{Board: board, Hash: h, PlayerID: 0, ActiveMask: 0x07, WinnerID: -1}
+	state := gs.ApplyMove(MoveFromIndex(2))
 	if state.WinnerID != -1 {
 		t.Errorf("Expected no winner yet, got %d", state.WinnerID)
 	}
@@ -166,9 +167,10 @@ func TestSimulationLogic(t *testing.T) {
 	board.Set(9, 1)
 	h = ZobristHash(board, 0, 0x07)
 	// P0 moves to 2 -> eliminated. Mask becomes 0x06 (P1, P2)
-	state1 := SimulateStep(board, 0x07, 0, MoveFromIndex(2), h)
+	gs1 := GameState{Board: board, Hash: h, PlayerID: 0, ActiveMask: 0x07, WinnerID: -1}
+	state1 := gs1.ApplyMove(MoveFromIndex(2))
 	// P1 moves to 10 -> eliminated. Mask becomes 0x04 (P2)
-	state2 := SimulateStep(state1.Board, state1.ActiveMask, 1, MoveFromIndex(10), state1.Hash)
+	state2 := state1.ApplyMove(MoveFromIndex(10))
 	if state2.WinnerID != 2 {
 		t.Errorf("Expected Player 2 to win as last man standing, got %d", state2.WinnerID)
 	}
@@ -416,8 +418,9 @@ func TestZobristIncrementalFuzz(t *testing.T) {
 		move := MoveFromIndex(idx)
 		// 4. Compute Initial Hash
 		initialHash := ZobristHash(board, currentID, activeMask)
+		gs := GameState{Board: board, Hash: initialHash, PlayerID: currentID, ActiveMask: activeMask, WinnerID: -1}
 		// 5. Execute Step (Incremental Update)
-		newState := SimulateStep(board, activeMask, currentID, move, initialHash)
+		newState := gs.ApplyMove(move)
 		// 6. Verification: Compute Hash from Scratch on New State
 		refHash := ZobristHash(newState.Board, newState.PlayerID, newState.ActiveMask)
 		if newState.Hash != refHash {
@@ -632,7 +635,7 @@ func ValidateMCTSGraph(t *testing.T, root *MCGSNode) {
 			}
 			// 5. State Consistency Check
 			// Re-simulate the move to ensure the hash matches the destination node
-			expectedState := SimulateStep(node.Board, node.ActiveMask, node.PlayerID, edgeMove, node.Hash)
+			expectedState := node.ApplyMove(edgeMove)
 			if expectedState.Hash != edgeDest.Hash {
 				t.Errorf("Hash consistency violation on edge %v: Expected %016x, got %016x",
 					edgeMove, expectedState.Hash, edgeDest.Hash)
