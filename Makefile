@@ -25,7 +25,8 @@ benchmark: build
 	@for i in $$(seq 100); do \
 		seed=$$(od -An -N4 -tu4 /dev/urandom | tr -d ' \n'); \
 		echo "Running game $$i/100 with seed $$seed..." ; \
-		./$(BINARY_NAME) -p1 mcts -p2 mcts -p3 mcts -iterations $(ITERATIONS) -seed $$seed > logs/game_$$seed.log 2>&1 ; \
+		./$(BINARY_NAME) -p1 mcts -p2 mcts -p3 mcts -iterations $(ITERATIONS) -seed $$seed > logs/game_$$seed.tmp 2>&1 && \
+		mv logs/game_$$seed.tmp logs/game_$$seed.log ; \
 	done
 	@echo "Benchmark complete. Results saved to logs/"
 
@@ -42,4 +43,4 @@ pprof:
 	go tool pprof -list selectBestEdge cpu.prof
 
 analyze:
-	python3 analyze_log.py logs/*
+	python3 analyze_log.py logs/*.log
