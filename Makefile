@@ -3,6 +3,7 @@
 BINARY_NAME=squava
 ITERATIONS=1000000
 FUZZ_ITERS=100000
+REPRO_SEED=641728870
 
 all: build
 
@@ -33,7 +34,7 @@ clean:
 	rm -f $(BINARY_NAME) squava_opt *.prof
 
 profile: build
-	./$(BINARY_NAME) -p1 mcts -p2 mcts -p3 mcts -iterations $(ITERATIONS) -seed 999 -cpuprofile cpu.prof
+	./$(BINARY_NAME) -p1 mcts -p2 mcts -p3 mcts -iterations $(ITERATIONS) -seed $(REPRO_SEED) -cpuprofile cpu.prof | tee repro_game_$(REPRO_SEED).log
 	go tool pprof -top cpu.prof
 
 pprof:
