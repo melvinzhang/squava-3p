@@ -833,10 +833,8 @@ func TestMCGSNodeMethods(t *testing.T) {
 	if node.Edges[idx].N != 0 {
 		t.Errorf("Expected 0 visits, got %d", node.Edges[idx].N)
 	}
-	for i := 0; i < 3; i++ {
-		if node.Edges[idx].Q[i] != child.Q[i] {
-			t.Errorf("Edge Q%d mismatch: expected %f, got %f", i, child.Q[i], node.Edges[idx].Q[i])
-		}
+	if node.Edges[idx].Q != child.Q[node.PlayerID] {
+		t.Errorf("Edge Q mismatch: expected %f, got %f", child.Q[node.PlayerID], node.Edges[idx].Q)
 	}
 
 	// Test SyncEdge
@@ -845,10 +843,8 @@ func TestMCGSNodeMethods(t *testing.T) {
 	if node.Edges[idx].N != 1 {
 		t.Errorf("Expected 1 visit, got %d", node.Edges[idx].N)
 	}
-	for i := 0; i < 3; i++ {
-		if node.Edges[idx].Q[i] != child.Q[i] {
-			t.Errorf("Edge Q%d mismatch after sync: expected %f, got %f", i, child.Q[i], node.Edges[idx].Q[i])
-		}
+	if node.Edges[idx].Q != child.Q[node.PlayerID] {
+		t.Errorf("Edge Q mismatch after sync: expected %f, got %f", child.Q[node.PlayerID], node.Edges[idx].Q)
 	}
 
 	// Test UpdateStats
