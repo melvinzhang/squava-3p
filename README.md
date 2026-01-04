@@ -11,6 +11,22 @@ Squava is traditionally a 2-player game. This version expands the rules for 3 pl
 - **Elimination:** If a player creates a **3-in-a-row** and does *not* complete a 4-in-a-row with the same move, they are eliminated from the game. Their pieces remain on the board as obstacles.
 - **Goal:** Be the last player standing or the first to complete 4-in-a-row.
 
+## Web Version
+
+The game is also available as a fully client-side web application. It uses the same high-performance Go engine compiled to WebAssembly.
+
+### Architecture
+- **WebAssembly (WASM):** The Go engine is compiled to WASM using the `js/wasm` target. It utilizes a pure Go fallback for bitwise operations since AVX2 is not available in the browser.
+- **Web Workers:** To prevent UI freezing during deep MCTS searches (20,000+ iterations), the WASM engine runs inside a dedicated Web Worker.
+- **Automated AI:** You can choose to play as any of the three players. The engine automatically triggers AI moves for the other two participants.
+
+### Running the Web Version
+1. **Build and Serve:**
+   ```bash
+   make serve
+   ```
+2. **Access:** Open `http://localhost:8080` in your browser.
+
 ## Technical Architecture
 
 ### Bitboard Engine
