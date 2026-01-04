@@ -8,7 +8,7 @@ REPRO_SEED=641728870
 all: build
 
 build:
-	go build -pgo default.prof -o $(BINARY_NAME) .
+	go build -o $(BINARY_NAME) .
 
 test:
 	go test -v .
