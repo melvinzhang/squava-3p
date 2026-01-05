@@ -526,9 +526,7 @@ func (tt TranspositionTable) Lookup(gs *GameState) *MCGSNode {
 	idx := gs.Hash & TTMask
 	entry := tt[idx]
 	if entry.hash == gs.Hash && entry.node != nil {
-		if entry.node.Matches(gs) {
-			return entry.node
-		}
+		return entry.node
 	}
 	return nil
 }
@@ -570,10 +568,9 @@ func (m *MCTSPlayer) Search(gs GameState) (int, int) {
 	for root.N < m.iterations {
 		tmpGS := gs
 		path := m.Select(root, &tmpGS)
-		leaf := path[len(path)-1].Node
 
 		var result [3]float32
-		winnerID, terminal := leaf.IsTerminal()
+		winnerID, terminal := tmpGS.IsTerminal()
 		if terminal {
 			result = ScoreTerminal(tmpGS.ActiveMask, winnerID)
 		} else {
@@ -670,25 +667,27 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 }
 
 type PathStep struct {
-	Node    *MCGSNode
-	EdgeIdx int // Index in the parent's Edges slice
+	Node     *MCGSNode
+	EdgeIdx  int // Index in the parent's Edges slice
+	PlayerID int // Player who acts at Node
 }
 
 var negInf = math.Inf(-1)
 
 func (m *MCTSPlayer) Select(root *MCGSNode, gs *GameState) []PathStep {
 	m.path = m.path[:0]
-	m.path = append(m.path, PathStep{Node: root, EdgeIdx: -1})
+	m.path = append(m.path, PathStep{Node: root, EdgeIdx: -1, PlayerID: gs.PlayerID})
 
 	curr := root
 	for {
-		if _, terminal := curr.IsTerminal(); terminal {
+		if _, terminal := gs.IsTerminal(); terminal {
 			break
 		}
 		// --- Expansion Phase ---
 		if move, ok := curr.PopUntriedMove(); ok {
-			child, isNew, edgeIdx := m.expand(curr, gs, move)
-			m.path = append(m.path, PathStep{Node: child, EdgeIdx: edgeIdx})
+			parentPlayerID := gs.PlayerID
+			child, isNew, edgeIdx := m.expand(curr, gs, move, parentPlayerID)
+			m.path = append(m.path, PathStep{Node: child, EdgeIdx: edgeIdx, PlayerID: gs.PlayerID})
 			if isNew {
 				return m.path
 			}
@@ -704,13 +703,13 @@ func (m *MCTSPlayer) Select(root *MCGSNode, gs *GameState) []PathStep {
 
 		edge := &curr.Edges[bestIdx]
 		gs.ApplyMove(edge.Move)
-		m.path = append(m.path, PathStep{Node: edge.Dest, EdgeIdx: bestIdx})
+		m.path = append(m.path, PathStep{Node: edge.Dest, EdgeIdx: bestIdx, PlayerID: gs.PlayerID})
 		curr = edge.Dest
 	}
 	return m.path
 }
 
-func (m *MCTSPlayer) expand(curr *MCGSNode, gs *GameState, move Move) (*MCGSNode, bool, int) {
+func (m *MCTSPlayer) expand(curr *MCGSNode, gs *GameState, move Move, playerID int) (*MCGSNode, bool, int) {
 	gs.ApplyMove(move)
 
 	child := tt.Lookup(gs)
@@ -721,7 +720,7 @@ func (m *MCTSPlayer) expand(curr *MCGSNode, gs *GameState, move Move) (*MCGSNode
 		tt.Store(gs.Hash, child)
 	}
 
-	edgeIdx := curr.AddEdge(move, child)
+	edgeIdx := curr.AddEdge(move, child, playerID)
 	return child, isNew, edgeIdx
 }
 func (m *MCTSPlayer) Backprop(path []PathStep, result [3]float32) {
@@ -731,8 +730,8 @@ func (m *MCTSPlayer) Backprop(path []PathStep, result [3]float32) {
 		node.UpdateStats(result)
 
 		if i > 0 && step.EdgeIdx != -1 {
-			parent := path[i-1].Node
-			parent.SyncEdge(step.EdgeIdx, node)
+			parentStep := path[i-1]
+			parentStep.Node.SyncEdge(step.EdgeIdx, node, parentStep.PlayerID)
 		}
 	}
 }
@@ -746,11 +745,6 @@ type MCGSEdge struct {
 }
 
 type MCGSNode struct {
-	Hash         uint64
-	PlayerID     int
-	ActiveMask   uint8
-	WinnerID     int
-	Terminal     bool
 	N            int
 	Q            [3]float32
 	Edges        []MCGSEdge
@@ -758,12 +752,12 @@ type MCGSNode struct {
 	UCB1Coeff    float32
 }
 
-func (n *MCGSNode) AddEdge(move Move, dest *MCGSNode) int {
+func (n *MCGSNode) AddEdge(move Move, dest *MCGSNode, playerID int) int {
 	idx := len(n.Edges)
 	n.Edges = append(n.Edges, MCGSEdge{
 		Move: move,
 		Dest: dest,
-		Q:    dest.Q[n.PlayerID],
+		Q:    dest.Q[playerID],
 		U:    invSqrtTable[1],
 	})
 	return idx
@@ -805,10 +799,10 @@ func (n *MCGSNode) UpdateStats(result [3]float32) {
 	}
 }
 
-func (n *MCGSNode) SyncEdge(idx int, child *MCGSNode) {
+func (n *MCGSNode) SyncEdge(idx int, child *MCGSNode, playerID int) {
 	edge := &n.Edges[idx]
 	edge.N++
-	edge.Q = child.Q[n.PlayerID]
+	edge.Q = child.Q[playerID]
 	vPlus1 := int(edge.N) + 1
 	if vPlus1 < len(invSqrtTable) {
 		edge.U = invSqrtTable[vPlus1]
@@ -827,28 +821,15 @@ func (n *MCGSNode) PopUntriedMove() (Move, bool) {
 }
 
 func NewMCGSNode(gs GameState) *MCGSNode {
-	winnerID, terminal := gs.IsTerminal()
+	_, terminal := gs.IsTerminal()
 	var untried Bitboard
 	if !terminal {
 		untried = gs.GetBestMoves()
 	}
 	n := &MCGSNode{
-		Hash:         gs.Hash,
-		PlayerID:     gs.PlayerID,
-		ActiveMask:   gs.ActiveMask,
-		WinnerID:     winnerID,
-		Terminal:     terminal,
 		untriedMoves: untried,
 	}
 	return n
-}
-
-func (n *MCGSNode) Matches(gs *GameState) bool {
-	return n.Hash == gs.Hash && n.PlayerID == gs.PlayerID && n.ActiveMask == gs.ActiveMask
-}
-
-func (n *MCGSNode) IsTerminal() (int, bool) {
-	return n.WinnerID, n.Terminal
 }
 
 func SelectBit64(v uint64, k int) int {

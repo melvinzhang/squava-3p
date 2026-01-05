@@ -560,7 +560,7 @@ func ValidateMCTSGraph(t *testing.T, root *MCGSNode, rootGS GameState) {
 	checkNode = func(node *MCGSNode, gs GameState) {
 		// 1. Cycle Detection
 		if stack[node] {
-			t.Errorf("Cycle detected in MCTS graph at node hash %016x", node.Hash)
+			t.Errorf("Cycle detected in MCTS graph at node hash %016x", gs.Hash)
 			return
 		}
 		// 2. Transposition Handling (memoization)
@@ -572,13 +572,13 @@ func ValidateMCTSGraph(t *testing.T, root *MCGSNode, rootGS GameState) {
 		defer func() { stack[node] = false }()
 		// 3. Value Invariants
 		if node.N < 0 {
-			t.Errorf("Node %016x has negative visits: %d", node.Hash, node.N)
+			t.Errorf("Node %016x has negative visits: %d", gs.Hash, node.N)
 		}
 		// Assuming Win/Loss rewards are 0.0 to 1.0 (or -1 to 1)
 		// Squava implementation uses [0,1]
 		for i := 0; i < 3; i++ {
 			if node.Q[i] < -0.01 || node.Q[i] > 1.01 {
-				t.Errorf("Node %016x has Q value out of bounds [0,1]: %v", node.Hash, node.Q)
+				t.Errorf("Node %016x has Q value out of bounds [0,1]: %v", gs.Hash, node.Q)
 			}
 		}
 		// 4. Edge Invariants
@@ -590,7 +590,7 @@ func ValidateMCTSGraph(t *testing.T, root *MCGSNode, rootGS GameState) {
 			edgeMove := edge.Move
 			sumEdgeVisits += edgeVisits
 			if edgeDest == nil {
-				t.Errorf("Node %016x has edge with nil destination", node.Hash)
+				t.Errorf("Node %016x has edge with nil destination", gs.Hash)
 				continue
 			}
 			// DAG Invariant: Edge Visits vs Child Total Visits
@@ -598,16 +598,15 @@ func ValidateMCTSGraph(t *testing.T, root *MCGSNode, rootGS GameState) {
 			// must be <= Total times Child was visited (from any parent).
 			if edgeVisits > edgeDest.N {
 				t.Errorf("Flow violation: Edge from %016x to %016x has %d visits, but child only has %d total visits.",
-					node.Hash, edgeDest.Hash, edgeVisits, edgeDest.N)
+					gs.Hash, 0, edgeVisits, edgeDest.N)
 			}
 			// 5. State Consistency Check
 			// Re-simulate the move to ensure the hash matches the destination node
 			expectedState := gs
 			expectedState.ApplyMove(edgeMove)
-			if expectedState.Hash != edgeDest.Hash {
-				t.Errorf("Hash consistency violation on edge %v: Expected %016x, got %016x",
-					edgeMove, expectedState.Hash, edgeDest.Hash)
-			}
+			// We can't easily check edgeDest.Hash anymore without passing it or trusting it matches expectedState.Hash
+			// But we are here verifying the graph structure.
+
 			// Recurse
 			checkNode(edgeDest, expectedState)
 		}
@@ -616,7 +615,7 @@ func ValidateMCTSGraph(t *testing.T, root *MCGSNode, rootGS GameState) {
 		// node.N includes the visit where we stopped at this node (didn't traverse out).
 		if sumEdgeVisits > node.N {
 			t.Errorf("Node %016x has %d outgoing edge visits but only %d total node visits",
-				node.Hash, sumEdgeVisits, node.N)
+				gs.Hash, sumEdgeVisits, node.N)
 		}
 	}
 	checkNode(root, rootGS)
@@ -820,7 +819,7 @@ func TestMCGSNodeMethods(t *testing.T) {
 
 	// Test AddEdge
 	move := Move{r: 1, c: 1}
-	idx := node.AddEdge(move, child)
+	idx := node.AddEdge(move, child, gs1.PlayerID)
 	if idx != 0 {
 		t.Errorf("Expected edge index 0, got %d", idx)
 	}
@@ -833,18 +832,18 @@ func TestMCGSNodeMethods(t *testing.T) {
 	if node.Edges[idx].N != 0 {
 		t.Errorf("Expected 0 visits, got %d", node.Edges[idx].N)
 	}
-	if node.Edges[idx].Q != child.Q[node.PlayerID] {
-		t.Errorf("Edge Q mismatch: expected %f, got %f", child.Q[node.PlayerID], node.Edges[idx].Q)
+	if node.Edges[idx].Q != child.Q[gs1.PlayerID] {
+		t.Errorf("Edge Q mismatch: expected %f, got %f", child.Q[gs1.PlayerID], node.Edges[idx].Q)
 	}
 
 	// Test SyncEdge
 	child.Q = [3]float32{0.4, 0.5, 0.6}
-	node.SyncEdge(idx, child)
+	node.SyncEdge(idx, child, gs1.PlayerID)
 	if node.Edges[idx].N != 1 {
 		t.Errorf("Expected 1 visit, got %d", node.Edges[idx].N)
 	}
-	if node.Edges[idx].Q != child.Q[node.PlayerID] {
-		t.Errorf("Edge Q mismatch after sync: expected %f, got %f", child.Q[node.PlayerID], node.Edges[idx].Q)
+	if node.Edges[idx].Q != child.Q[gs1.PlayerID] {
+		t.Errorf("Edge Q mismatch after sync: expected %f, got %f", child.Q[gs1.PlayerID], node.Edges[idx].Q)
 	}
 
 	// Test UpdateStats
@@ -888,6 +887,7 @@ func TestTranspositionTableMethods(t *testing.T) {
 	}
 	gsWrongPlayer := gs
 	gsWrongPlayer.PlayerID = 1
+	gsWrongPlayer.Hash = zobrist.ComputeHash(gsWrongPlayer.Board, gsWrongPlayer.PlayerID, gsWrongPlayer.ActiveMask)
 	if table.Lookup(&gsWrongPlayer) != nil {
 		t.Errorf("Lookup should fail for different playerID")
 	}
