@@ -1062,3 +1062,14 @@ func TestIncrementalThreatsFuzz(t *testing.T) {
 		}
 	}
 }
+func BenchmarkMCTSBlankBoard10k(b *testing.B) {
+	player := NewMCTSPlayer("Bench", "B", 0, 10000)
+	gs := NewGameState(Board{}, 0, 0x07)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		tt.Clear()
+		b.StartTimer()
+		player.Search(gs)
+	}
+}

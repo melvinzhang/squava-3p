@@ -536,6 +536,12 @@ func (tt TranspositionTable) Store(hash uint64, node *MCGSNode) {
 	tt[idx] = TTEntry{hash: hash, node: node}
 }
 
+func (tt TranspositionTable) Clear() {
+	for i := range tt {
+		tt[i] = TTEntry{}
+	}
+}
+
 type MCTSPlayer struct {
 	info       PlayerInfo
 	iterations int
