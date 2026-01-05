@@ -734,6 +734,8 @@ type MCGSEdge struct {
 	N    int32
 }
 
+const InlineEdgeCap = 4
+
 type MCGSNode struct {
 	N            int
 	Q            [3]float32
@@ -742,6 +744,10 @@ type MCGSNode struct {
 	EdgeUs       []float32
 	untriedMoves Bitboard
 	UCB1Coeff    float32
+
+	edgesBuf [InlineEdgeCap]MCGSEdge
+	qsBuf    [InlineEdgeCap]float32
+	usBuf    [InlineEdgeCap]float32
 }
 
 func (n *MCGSNode) AddEdge(move Move, dest *MCGSNode, playerID int) int {
@@ -825,6 +831,9 @@ func NewMCGSNode(gs GameState) *MCGSNode {
 	n := &MCGSNode{
 		untriedMoves: untried,
 	}
+	n.Edges = n.edgesBuf[:0]
+	n.EdgeQs = n.qsBuf[:0]
+	n.EdgeUs = n.usBuf[:0]
 	return n
 }
 
