@@ -1,4 +1,4 @@
-.PHONY: all build test clean profile analyze fuzz benchmark wasm serve
+.PHONY: all build test clean profile analyze fuzz benchmark wasm serve zip
 
 BINARY_NAME=squava
 ITERATIONS=1000000
@@ -14,6 +14,10 @@ wasm:
 	mkdir -p web/public
 	cp /usr/share/go-1.24/lib/wasm/wasm_exec.js web/public/
 	GOOS=js GOARCH=wasm go build -o web/public/squava.wasm .
+
+zip: wasm
+	rm -f game.zip
+	zip -j game.zip web/public/*
 
 serve: wasm
 	@echo "Serving at http://localhost:8080"
@@ -41,7 +45,7 @@ benchmark: build
 
 clean:
 	go clean
-	rm -f $(BINARY_NAME) squava_opt *.prof
+	rm -f $(BINARY_NAME) squava_opt *.prof game.zip
 
 profile: build
 	./$(BINARY_NAME) -p1 mcts -p2 mcts -p3 mcts -iterations $(ITERATIONS) -seed $(REPRO_SEED) -cpuprofile cpu.prof | tee repro_game_$(REPRO_SEED).log
