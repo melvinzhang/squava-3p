@@ -682,36 +682,32 @@ var negInf = math.Inf(-1)
 
 func (m *MCTSPlayer) Select(root *MCGSNode, gs *GameState, path []PathStep) []PathStep {
 	path = append(path, PathStep{Node: root, EdgeIdx: -1, PlayerID: gs.PlayerID})
-
 	curr := root
+
 	for {
 		if _, terminal := gs.IsTerminal(); terminal {
-			break
+			return path
 		}
-		// --- Expansion Phase ---
-		if move, ok := curr.PopUntriedMove(); ok {
-			parentPlayerID := gs.PlayerID
-			child, isNew, edgeIdx := m.expand(curr, gs, move, parentPlayerID)
+
+		if curr.untriedMoves != 0 {
+			move, _ := curr.PopUntriedMove()
+			child, isNew, edgeIdx := m.expand(curr, gs, move, gs.PlayerID)
 			path = append(path, PathStep{Node: child, EdgeIdx: edgeIdx, PlayerID: gs.PlayerID})
 			if isNew {
 				return path
 			}
 			curr = child
-			continue
+		} else {
+			bestIdx := curr.selectBestEdge()
+			if bestIdx == -1 {
+				return path
+			}
+			edge := &curr.Edges[bestIdx]
+			gs.ApplyMove(edge.Move)
+			path = append(path, PathStep{Node: edge.Dest, EdgeIdx: bestIdx, PlayerID: gs.PlayerID})
+			curr = edge.Dest
 		}
-
-		// --- Selection Phase ---
-		bestIdx := curr.selectBestEdge()
-		if bestIdx == -1 {
-			break
-		}
-
-		edge := &curr.Edges[bestIdx]
-		gs.ApplyMove(edge.Move)
-		path = append(path, PathStep{Node: edge.Dest, EdgeIdx: bestIdx, PlayerID: gs.PlayerID})
-		curr = edge.Dest
 	}
-	return path
 }
 
 func (m *MCTSPlayer) expand(curr *MCGSNode, gs *GameState, move Move, playerID int) (*MCGSNode, bool, int) {
