@@ -11,6 +11,15 @@ import (
 var currentGS GameState
 
 func newGame(this js.Value, args []js.Value) any {
+	if len(args) > 0 {
+		seedStr := args[0].String()
+		var s uint64
+		fmt.Sscanf(seedStr, "%d", &s)
+		if s == 0 {
+			s = 1
+		}
+		xorState = s
+	}
 	board := Board{}
 	activeMask := uint8(0x07) // All 3 players active
 	currentGS = NewGameState(board, 0, activeMask)

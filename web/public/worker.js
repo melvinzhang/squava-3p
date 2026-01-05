@@ -12,7 +12,8 @@ WebAssembly.instantiateStreaming(fetch("squava.wasm"), go.importObject).then((re
 onmessage = (e) => {
     const { type, payload } = e.data;
     if (type === 'NEW_GAME') {
-        const hash = squavaNewGame();
+        const seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER).toString();
+        const hash = squavaNewGame(seed);
         const board = squavaGetBoard();
         postMessage({ type: 'GAME_UPDATED', payload: { hash, board } });
     } else if (type === 'APPLY_MOVE') {
