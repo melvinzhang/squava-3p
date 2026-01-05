@@ -3,16 +3,17 @@
 BINARY_NAME=squava
 ITERATIONS=1000000
 REPRO_SEED=641728870
+GO=/usr/lib/go-1.25/bin/go
 
 all: build
 
 build:
-	go build -o $(BINARY_NAME) .
+	GOEXPERIMENT=greenteagc $(GO) build -o $(BINARY_NAME) .
 
 wasm:
 	mkdir -p web/public
 	cp /usr/share/go-1.24/lib/wasm/wasm_exec.js web/public/
-	GOOS=js GOARCH=wasm go build -o web/public/squava.wasm .
+	GOOS=js GOARCH=wasm $(GO) build -o web/public/squava.wasm .
 
 zip: wasm
 	rm -f game.zip
@@ -23,7 +24,7 @@ serve: wasm
 	python3 -m http.server 8080 --directory web/public
 
 test:
-	go test -v .
+	$(GO) test -v .
 
 fuzz:
 	@for f in $$(go test -list Fuzz . | grep ^Fuzz); do \
