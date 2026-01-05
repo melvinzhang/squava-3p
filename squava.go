@@ -691,12 +691,9 @@ func (m *MCTSPlayer) Select(root *MCGSNode, gs *GameState, path []PathStep) []Pa
 
 		if curr.untriedMoves != 0 {
 			move, _ := curr.PopUntriedMove()
-			child, isNew, edgeIdx := m.expand(curr, gs, move, gs.PlayerID)
+			child, _, edgeIdx := m.expand(curr, gs, move, gs.PlayerID)
 			path = append(path, PathStep{Node: child, EdgeIdx: edgeIdx, PlayerID: gs.PlayerID})
-			if isNew {
-				return path
-			}
-			curr = child
+			return path
 		} else {
 			bestIdx := curr.selectBestEdge()
 			if bestIdx == -1 {
@@ -713,16 +710,13 @@ func (m *MCTSPlayer) Select(root *MCGSNode, gs *GameState, path []PathStep) []Pa
 func (m *MCTSPlayer) expand(curr *MCGSNode, gs *GameState, move Move, playerID int) (*MCGSNode, bool, int) {
 	gs.ApplyMove(move)
 
-	child := tt.Lookup(gs)
-	isNew := child == nil
-
-	if isNew {
-		child = NewMCGSNode(*gs)
-		tt.Store(gs.Hash, child)
-	}
+	// Skip TT lookup during search to save time (low hit rate).
+	// We still store the node so it can be found if it becomes the root later.
+	child := NewMCGSNode(*gs)
+	tt.Store(gs.Hash, child)
 
 	edgeIdx := curr.AddEdge(move, child, playerID)
-	return child, isNew, edgeIdx
+	return child, true, edgeIdx
 }
 func (m *MCTSPlayer) Backprop(path []PathStep, result [3]float32) {
 	for i := len(path) - 1; i >= 0; i-- {
