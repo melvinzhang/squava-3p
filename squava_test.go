@@ -1,13 +1,10 @@
 package main
 
 import (
-	"flag"
 	"math"
 	"math/bits"
 	"testing"
 )
-
-var fuzzIterations = flag.Int("fuzz_iters", 10000, "Number of iterations for fuzz tests")
 
 func generateRandomBoard(numPieces int) Board {
 	board := Board{}
@@ -118,28 +115,18 @@ func slowGetWinsAndLosses(bb Bitboard, empty Bitboard) (wins Bitboard, loses Bit
 	}
 	return Bitboard(w), Bitboard(l & ^w)
 }
-func TestGetWinsAndLossesRandomized(t *testing.T) {
-	for seed := 0; seed < *fuzzIterations; seed++ {
-		xorState = uint64(seed + 1)
-		// Generate random board
-		var b, e uint64
-		for i := 0; i < 64; i++ {
-			val := xrand() % 3
-			if val == 1 {
-				b |= (1 << uint(i))
-			} else if val == 0 {
-				e |= (1 << uint(i))
-			}
-		}
+func FuzzGetWinsAndLossesAgainstSlow(f *testing.F) {
+	f.Add(uint64(0), uint64(0))
+	f.Fuzz(func(t *testing.T, b uint64, e uint64) {
 		wExpected, lExpected := slowGetWinsAndLosses(Bitboard(b), Bitboard(e))
 		wActual, lActual := GetWinsAndLosses(Bitboard(b), Bitboard(e))
 		if wActual != wExpected {
-			t.Errorf("Seed %d: Win bitboard mismatch. Expected %016x, got %016x", seed, uint64(wExpected), uint64(wActual))
+			t.Errorf("Win bitboard mismatch. Expected %016x, got %016x", uint64(wExpected), uint64(wActual))
 		}
 		if lActual != lExpected {
-			t.Errorf("Seed %d: Loss bitboard mismatch. Expected %016x, got %016x", seed, uint64(lExpected), uint64(lActual))
+			t.Errorf("Loss bitboard mismatch. Expected %016x, got %016x", uint64(lExpected), uint64(lActual))
 		}
-	}
+	})
 }
 
 func BenchmarkGetWinsAndLosses(b *testing.B) {
@@ -318,9 +305,12 @@ func referenceRunSimulation(board Board, activeMask uint8, currentID int) ([3]fl
 		gs.ApplyMove(MoveFromIndex(idx))
 	}
 }
-func TestRunSimulationRandomized(t *testing.T) {
-	for i := 0; i < *fuzzIterations; i++ {
-		board := generateRandomBoard(20)
+func FuzzRunSimulation(f *testing.F) {
+	f.Add(uint64(1), uint64(0)) // seed, boardPieces
+	f.Fuzz(func(t *testing.T, seed uint64, boardPieces uint64) {
+		xorState = seed
+		numPieces := int(boardPieces % 40)
+		board := generateRandomBoard(numPieces)
 		won := false
 		for p := 0; p < 3; p++ {
 			isW, isL := CheckBoard(board.P[p])
@@ -330,29 +320,28 @@ func TestRunSimulationRandomized(t *testing.T) {
 			}
 		}
 		if won {
-			continue
+			return
 		}
 		// Ensure both use exact same random sequence
-		seed := uint64(i + 1)
-		xorState = seed
+		runSeed := xrand()
+		xorState = runSeed
 		gs := NewGameState(board, 0, 0x07)
 		resOpt, _, boardOpt := RunSimulation(&gs)
-		xorState = seed
+		xorState = runSeed
 		resRef, boardRef := referenceRunSimulation(board, 0x07, 0)
 		if resOpt != resRef {
-			t.Errorf("Iteration %d: Result mismatch. Opt: %v, Ref: %v", i, resOpt, resRef)
+			t.Errorf("Result mismatch. Opt: %v, Ref: %v", resOpt, resRef)
 		}
 		if boardOpt != boardRef {
-			t.Errorf("Iteration %d: Final board mismatch.", i)
+			t.Errorf("Final board mismatch.")
 		}
-	}
+	})
 }
-func TestZobristIncrementalFuzz(t *testing.T) {
-	for i := 0; i < *fuzzIterations; i++ {
-		// 1. Generate Random Board
-		board := generateRandomBoard(20)
-		// 2. Setup Random Valid Context
-		// Active mask must have at least 2 players
+func FuzzZobristIncremental(f *testing.F) {
+	f.Add(uint64(1), uint64(20))
+	f.Fuzz(func(t *testing.T, seed uint64, numPieces uint64) {
+		xorState = seed
+		board := generateRandomBoard(int(numPieces % 40))
 		var activeMask uint8
 		for {
 			activeMask = uint8(xrand() % 8)
@@ -360,7 +349,6 @@ func TestZobristIncrementalFuzz(t *testing.T) {
 				break
 			}
 		}
-		// Current player must be in active mask
 		var currentID int
 		for {
 			currentID = int(xrand() % 3)
@@ -368,77 +356,54 @@ func TestZobristIncrementalFuzz(t *testing.T) {
 				break
 			}
 		}
-		// 3. Select a Random Valid Move
 		empty := ^board.Occupied
 		if empty == 0 {
-			continue // Full board, retry
+			return
 		}
-		// Pick a random bit from empty
 		count := bits.OnesCount64(uint64(empty))
-		if count == 0 {
-			continue
-		}
 		n := int(xrand() % uint64(count))
-		// Find n-th bit
 		idx := SelectBit64(uint64(empty), n)
 		move := MoveFromIndex(idx)
-		// 4. Execute Step (Incremental Update)
 		gs := NewGameState(board, currentID, activeMask)
 		gs.ApplyMove(move)
-		// 5. Verification: Compute Hash from Scratch on New State
 		refHash := zobrist.ComputeHash(gs.Board, gs.PlayerID, gs.ActiveMask)
 		if gs.Hash != refHash {
-			t.Errorf("Iteration %d: Hash mismatch.\nState: %+v\nIncremental: %016x\nReference:   %016x",
-				i, gs, gs.Hash, refHash)
-			return // Stop on first error to avoid spam
+			t.Errorf("Hash mismatch. Incremental: %016x, Reference: %016x", gs.Hash, refHash)
 		}
-	}
+	})
 }
-func TestSelectBit64Fuzz(t *testing.T) {
-	referenceSelectBit64 := func(v uint64, k int) int {
-		count := 0
-		for i := 0; i < 64; i++ {
-			if (v & (1 << uint(i))) != 0 {
-				if count == k {
-					return i
-				}
-				count++
-			}
-		}
-		return 64
-	}
-	for i := 0; i < *fuzzIterations*10; i++ {
-		// Generate various types of bit patterns
-		var v uint64
-		switch i % 4 {
-		case 0:
-			v = xrand() // Completely random
-		case 1:
-			v = 1 << (xrand() % 64) // Single bit
-		case 2:
-			v = ^uint64(0) // All bits set
-		case 3:
-			v = xrand() & xrand() & xrand() // Sparse
-		}
+func FuzzSelectBit64Internal(f *testing.F) {
+	f.Add(uint64(0b101010), uint64(1))
+	f.Fuzz(func(t *testing.T, v uint64, k64 uint64) {
 		count := bits.OnesCount64(v)
 		if count == 0 {
-			continue
+			return
 		}
-		k := int(xrand() % uint64(count))
+		k := int(k64 % uint64(count))
+		referenceSelectBit64 := func(v uint64, k int) int {
+			count := 0
+			for i := 0; i < 64; i++ {
+				if (v & (1 << uint(i))) != 0 {
+					if count == k {
+						return i
+					}
+					count++
+				}
+			}
+			return 64
+		}
 		expected := referenceSelectBit64(v, k)
 		actual := SelectBit64(v, k)
 		if actual != expected {
-			t.Errorf("Iteration %d: Mismatch for v=%016x, k=%d. Expected bit %d, got %d",
-				i, v, k, expected, actual)
-			return
+			t.Errorf("Mismatch for v=%016x, k=%d. Expected bit %d, got %d", v, k, expected, actual)
 		}
-	}
+	})
 }
-func TestHeuristicMoveGenerationFuzz(t *testing.T) {
-	for i := 0; i < *fuzzIterations; i++ {
-		// 1. Generate Random Board
-		board := generateRandomBoard(25)
-		// Ensure board is clean (no existing wins/losses)
+func FuzzHeuristicMoveGeneration(f *testing.F) {
+	f.Add(uint64(1), uint64(25))
+	f.Fuzz(func(t *testing.T, seed uint64, numPieces64 uint64) {
+		xorState = seed
+		board := generateRandomBoard(int(numPieces64 % 40))
 		clean := true
 		for p := 0; p < 3; p++ {
 			isW, isL := CheckBoard(board.P[p])
@@ -448,11 +413,9 @@ func TestHeuristicMoveGenerationFuzz(t *testing.T) {
 			}
 		}
 		if !clean {
-			continue
+			return
 		}
-		// 2. Setup Players
 		currentID := int(xrand() % 3)
-		// 3. Analyze
 		gs := NewGameState(board, currentID, 0x07)
 		forced := GetForcedMoves(board, []int{0, 1, 2}, currentID)
 		best := gs.GetBestMoves()
@@ -461,24 +424,10 @@ func TestHeuristicMoveGenerationFuzz(t *testing.T) {
 		nextID := gs.NextPlayer()
 		nextWins := gs.Wins[nextID]
 
-		// 4. Verify Validity
 		empty := ^board.Occupied
-		if (myWins & ^empty) != 0 {
-			t.Errorf("Iteration %d: MyWins overlaps occupied", i)
+		if (myWins & ^empty) != 0 || (nextWins & ^empty) != 0 || (myLoses & ^empty) != 0 || (forced & ^empty) != 0 || (best & ^empty) != 0 {
+			t.Errorf("Moves overlap occupied squares")
 		}
-		if (nextWins & ^empty) != 0 {
-			t.Errorf("Iteration %d: NextWins overlaps occupied", i)
-		}
-		if (myLoses & ^empty) != 0 {
-			t.Errorf("Iteration %d: MyLoses overlaps occupied", i)
-		}
-		if (forced & ^empty) != 0 {
-			t.Errorf("Iteration %d: Forced moves overlap occupied", i)
-		}
-		if (best & ^empty) != 0 {
-			t.Errorf("Iteration %d: Best moves overlap occupied", i)
-		}
-		// 5. Verify MyWins (Immediate Win)
 		w := myWins
 		for w != 0 {
 			idx := bits.TrailingZeros64(uint64(w))
@@ -486,11 +435,10 @@ func TestHeuristicMoveGenerationFuzz(t *testing.T) {
 			testBoard.Set(idx, currentID)
 			isWin, _ := CheckBoard(testBoard.P[currentID])
 			if !isWin {
-				t.Errorf("Iteration %d: GameState claimed immediate win at %d, but CheckBoard said no.", i, idx)
+				t.Errorf("GameState claimed immediate win at %d, but CheckBoard said no.", idx)
 			}
 			w &= w - 1
 		}
-		// 6. Verify NextWins (Opponent Win)
 		nw := nextWins
 		for nw != 0 {
 			idx := bits.TrailingZeros64(uint64(nw))
@@ -498,11 +446,10 @@ func TestHeuristicMoveGenerationFuzz(t *testing.T) {
 			testBoard.Set(idx, nextID)
 			isWin, _ := CheckBoard(testBoard.P[nextID])
 			if !isWin {
-				t.Errorf("Iteration %d: GameState claimed opponent win at %d, but CheckBoard said no.", i, idx)
+				t.Errorf("GameState claimed opponent win at %d, but CheckBoard said no.", idx)
 			}
 			nw &= nw - 1
 		}
-		// 7. Verify MyLoses (Self-Loss)
 		l := myLoses
 		for l != 0 {
 			idx := bits.TrailingZeros64(uint64(l))
@@ -510,42 +457,32 @@ func TestHeuristicMoveGenerationFuzz(t *testing.T) {
 			testBoard.Set(idx, currentID)
 			_, isLoss := CheckBoard(testBoard.P[currentID])
 			if !isLoss {
-				t.Errorf("Iteration %d: GameState claimed self-loss at %d, but CheckBoard said no.", i, idx)
+				t.Errorf("GameState claimed self-loss at %d, but CheckBoard said no.", idx)
 			}
 			l &= l - 1
 		}
-		// 8. Verify Priority Logic
 		if myWins != 0 {
-			if forced != myWins {
-				t.Errorf("Iteration %d: Forced should equal MyWins", i)
-			}
-			if best != myWins {
-				t.Errorf("Iteration %d: Best should equal MyWins", i)
+			if forced != myWins || best != myWins {
+				t.Errorf("Forced/Best should equal MyWins")
 			}
 		} else if nextWins != 0 {
-			if forced != nextWins {
-				t.Errorf("Iteration %d: Forced should equal NextWins", i)
-			}
-			if best != nextWins {
-				t.Errorf("Iteration %d: Best should equal NextWins", i)
+			if forced != nextWins || best != nextWins {
+				t.Errorf("Forced/Best should equal NextWins")
 			}
 		} else {
 			if forced != 0 {
-				t.Errorf("Iteration %d: Forced should be 0 when no immediate threats", i)
+				t.Errorf("Forced should be 0 when no immediate threats")
 			}
-			// Verify Best avoids losses if possible
 			safe := empty & ^myLoses
 			if safe != 0 {
 				if best != safe {
-					t.Errorf("Iteration %d: Best should be safe moves (Empty & ^MyLoses). Got %x, Expected %x", i, best, safe)
+					t.Errorf("Best should be safe moves. Got %x, Expected %x", best, safe)
 				}
-			} else {
-				if best != empty {
-					t.Errorf("Iteration %d: Best should be empty (resignation/forced loss) when no safe moves", i)
-				}
+			} else if best != empty {
+				t.Errorf("Best should be empty when no safe moves")
 			}
 		}
-	}
+	})
 }
 func ValidateMCTSGraph(t *testing.T, root *MCGSNode, rootGS GameState) {
 	if root == nil {
@@ -620,15 +557,15 @@ func ValidateMCTSGraph(t *testing.T, root *MCGSNode, rootGS GameState) {
 	}
 	checkNode(root, rootGS)
 }
-func TestMCTSInvariants(t *testing.T) {
-	// Use fewer iterations for MCTS fuzzing to keep test time reasonable per run,
-	// unless specifically scaling up.
-	mctsIters := 200
-	fuzzRuns := *fuzzIterations / 10 // scale down total runs as MCTS is heavy
-	for i := 0; i < fuzzRuns; i++ {
-		// 1. Generate Random Board
-		board := generateRandomBoard(25)
-		// Ensure board is clean for MCTS start
+func FuzzMCTSInvariants(f *testing.F) {
+	f.Add(uint64(1), uint64(25), uint64(200))
+	f.Fuzz(func(t *testing.T, seed uint64, numPieces64 uint64, mctsIters64 uint64) {
+		xorState = seed
+		mctsIters := int(mctsIters64 % 1000)
+		if mctsIters < 10 {
+			mctsIters = 10
+		}
+		board := generateRandomBoard(int(numPieces64 % 40))
 		clean := true
 		for p := 0; p < 3; p++ {
 			isW, isL := CheckBoard(board.P[p])
@@ -638,60 +575,51 @@ func TestMCTSInvariants(t *testing.T) {
 			}
 		}
 		if !clean {
-			continue
+			return
 		}
-		// Run a short game/simulation to build a graph
 		player := NewMCTSPlayer("Tester", "T", 0, mctsIters)
-		// We don't care about the resulting move, just the graph structure
 		activeIDs := []int{0, 1, 2}
 		_ = player.GetMove(board, activeIDs, 0)
 		if player.root == nil {
-			t.Errorf("Iteration %d: MCTS did not generate a root node", i)
-			continue
+			t.Errorf("MCTS did not generate a root node")
+			return
 		}
-		// Validate the resulting graph
 		rootGS := NewGameState(board, 0, 0x07)
 		ValidateMCTSGraph(t, player.root, rootGS)
-	}
+	})
 }
-func TestFullGameTerminationFuzz(t *testing.T) {
-	for i := 0; i < *fuzzIterations/100; i++ { // Full games are slow, run fewer iterations
+func FuzzFullGameTermination(f *testing.F) {
+	f.Add(uint64(1))
+	f.Fuzz(func(t *testing.T, seed uint64) {
+		xorState = seed
 		board := Board{}
 		activeMask := uint8(0x07)
 		currentPID := 0
 		players := []int{0, 1, 2}
-		// Play until termination
 		for {
-			// 1. Check if game is already over (should not happen mid-loop)
 			empty := ^board.Occupied
 			if empty == 0 {
-				break // Draw
+				break
 			}
-			// 2. Select random legal move
 			count := bits.OnesCount64(uint64(empty))
 			n := int(xrand() % uint64(count))
 			idx := SelectBit64(uint64(empty), n)
-			// 3. Apply move
 			board.Set(idx, currentPID)
-			// 4. Check rules
 			isWin, isLoss := CheckBoard(board.P[currentPID])
 			if isWin {
-				// Current player wins. Verify no one else has a win.
 				for _, p := range players {
 					if p == currentPID {
 						continue
 					}
 					w, _ := CheckBoard(board.P[p])
 					if w {
-						t.Errorf("Iteration %d: Invalid state. Multiple players have wins.", i)
+						t.Errorf("Invalid state. Multiple players have wins.")
 					}
 				}
 				goto GameEnd
 			}
 			if isLoss {
-				// Current player eliminated
 				activeMask &= ^(1 << uint(currentPID))
-				// Remove current player from players slice for turn rotation
 				for j, p := range players {
 					if p == currentPID {
 						players = append(players[:j], players[j+1:]...)
@@ -699,27 +627,20 @@ func TestFullGameTerminationFuzz(t *testing.T) {
 					}
 				}
 				if len(players) == 1 {
-					// Last man standing wins
 					goto GameEnd
 				}
-				// Game continues with fewer players.
-				// currentPID is already updated by turn logic below.
-			} else {
-				// No win or loss, turn rotation handled below
 			}
 			if board.Occupied == Bitboard(0xFFFFFFFFFFFFFFFF) {
-				goto GameEnd // Draw
+				goto GameEnd
 			}
-			// 5. Next Turn
 			nextPID := int(nextPlayerTable[currentPID][activeMask])
 			if nextPID == -1 {
-				t.Errorf("Iteration %d: nextPlayerTable returned -1 for activeMask %02x", i, activeMask)
+				t.Errorf("nextPlayerTable returned -1 for activeMask %02x", activeMask)
 				goto GameEnd
 			}
 			currentPID = nextPID
 		}
 	GameEnd:
-		// Termination reached. Verify invariants.
 		winCount := 0
 		for p := 0; p < 3; p++ {
 			isW, _ := CheckBoard(board.P[p])
@@ -728,9 +649,9 @@ func TestFullGameTerminationFuzz(t *testing.T) {
 			}
 		}
 		if winCount > 1 {
-			t.Errorf("Iteration %d: Invalid termination. Multiple winners: %d", i, winCount)
+			t.Errorf("Invalid termination. Multiple winners: %d", winCount)
 		}
-	}
+	})
 }
 
 func TestIncrementalUpdateEquivalence(t *testing.T) {
@@ -974,12 +895,11 @@ func TestSelectBit64(t *testing.T) {
 	}
 }
 
-func TestIncrementalThreatsFuzz(t *testing.T) {
-	for i := 0; i < *fuzzIterations; i++ {
-		// 1. Generate Random Board
-		board := generateRandomBoard(25)
-
-		// Ensure board is clean (no existing wins/losses)
+func FuzzIncrementalThreats(f *testing.F) {
+	f.Add(uint64(1), uint64(25))
+	f.Fuzz(func(t *testing.T, seed uint64, numPieces64 uint64) {
+		xorState = seed
+		board := generateRandomBoard(int(numPieces64 % 40))
 		clean := true
 		for p := 0; p < 3; p++ {
 			isW, isL := CheckBoard(board.P[p])
@@ -989,11 +909,8 @@ func TestIncrementalThreatsFuzz(t *testing.T) {
 			}
 		}
 		if !clean {
-			continue
+			return
 		}
-
-		// 2. Setup Context
-		// Active mask must have at least 2 players
 		var activeMask uint8
 		for {
 			activeMask = uint8(xrand() % 8)
@@ -1001,7 +918,6 @@ func TestIncrementalThreatsFuzz(t *testing.T) {
 				break
 			}
 		}
-		// Current player must be in active mask
 		var currentID int
 		for {
 			currentID = int(xrand() % 3)
@@ -1009,58 +925,33 @@ func TestIncrementalThreatsFuzz(t *testing.T) {
 				break
 			}
 		}
-
-		// 3. Select a Random Valid Move
 		empty := ^board.Occupied
 		if empty == 0 {
-			continue
+			return
 		}
 		count := bits.OnesCount64(uint64(empty))
 		n := int(xrand() % uint64(count))
 		idx := SelectBit64(uint64(empty), n)
 		move := MoveFromIndex(idx)
-
-		// 4. Create Initial State
 		gs := NewGameState(board, currentID, activeMask)
-
-		// 5. Apply Move (Trigger Incremental Update)
 		mover := gs.PlayerID
 		gs.ApplyMove(move)
-
-		// 6. Create Reference State (Full Recompute via InitThreats)
-		// We use the state properties from gs (Board, PlayerID, ActiveMask)
-		// to create a new state, which will force a fresh calculation of threats.
 		refGS := NewGameState(gs.Board, gs.PlayerID, gs.ActiveMask)
-
-		// 7. Verify Equivalence
-		// If the game ended with a win, ApplyMove returns early and doesn't update threats.
-		// In that case, gs.Wins still contains the winning move, while refGS (on new board) won't.
-		// We should skip threat verification if gs.WinnerID != -1
 		if gs.WinnerID != -1 {
-			continue
+			return
 		}
-
-		if gs.ActiveMask != refGS.ActiveMask {
-			t.Errorf("Iteration %d: ActiveMask mismatch. Inc: %02x, Ref: %02x", i, gs.ActiveMask, refGS.ActiveMask)
+		if gs.ActiveMask != refGS.ActiveMask || gs.Terminal != refGS.Terminal || gs.PlayerID != refGS.PlayerID {
+			t.Errorf("Metadata mismatch")
 		}
-		if gs.Terminal != refGS.Terminal {
-			t.Errorf("Iteration %d: Terminal mismatch. Inc: %v, Ref: %v", i, gs.Terminal, refGS.Terminal)
-		}
-		if gs.PlayerID != refGS.PlayerID {
-			t.Errorf("Iteration %d: PlayerID mismatch. Inc: %d, Ref: %d", i, gs.PlayerID, refGS.PlayerID)
-		}
-
 		for p := 0; p < 3; p++ {
 			if gs.Wins[p] != refGS.Wins[p] {
-				t.Errorf("Iteration %d: Wins mismatch for P%d (Mover: P%d, Move: %d).\nIncremental: %016x\nReference:   %016x\nBoard Occ: %016x\nGS term: %v, Ref term: %v",
-					i, p, mover, move.ToIndex(), gs.Wins[p], refGS.Wins[p], gs.Board.Occupied, gs.Terminal, refGS.Terminal)
+				t.Errorf("Wins mismatch for P%d (Mover: P%d, Move: %d). Inc: %x, Ref: %x", p, mover, move.ToIndex(), gs.Wins[p], refGS.Wins[p])
 			}
 			if gs.Loses[p] != refGS.Loses[p] {
-				t.Errorf("Iteration %d: Loses mismatch for P%d (Mover: P%d, Move: %d).\nIncremental: %016x\nReference:   %016x",
-					i, p, mover, move.ToIndex(), gs.Loses[p], refGS.Loses[p])
+				t.Errorf("Loses mismatch for P%d. Inc: %x, Ref: %x", p, gs.Loses[p], refGS.Loses[p])
 			}
 		}
-	}
+	})
 }
 func BenchmarkMCTSBlankBoard10k(b *testing.B) {
 	player := NewMCTSPlayer("Bench", "B", 0, 10000)
@@ -1131,7 +1022,7 @@ func FuzzSelectBestEdge(f *testing.F) {
 	})
 }
 
-func FuzzGetWinsAndLosses(f *testing.F) {
+func FuzzWinsLossesSIMD(f *testing.F) {
 	f.Add(uint64(0), uint64(0))
 	f.Fuzz(func(t *testing.T, board uint64, empty uint64) {
 		wAVX, lAVX := getWinsAndLossesAVX2(board, empty)

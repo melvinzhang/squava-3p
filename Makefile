@@ -2,7 +2,6 @@
 
 BINARY_NAME=squava
 ITERATIONS=1000000
-FUZZ_ITERS=100000
 REPRO_SEED=641728870
 
 all: build
@@ -27,7 +26,10 @@ test:
 	go test -v .
 
 fuzz:
-	go test -v . -args -fuzz_iters=$(FUZZ_ITERS)
+	@for f in $$(go test -list Fuzz . | grep ^Fuzz); do \
+		echo "Running $$f..."; \
+		go test -v -fuzz=$$f -fuzztime=1s . || exit 1; \
+	done
 
 repro_game_%.log: build
 	./$(BINARY_NAME) -p1 mcts -p2 mcts -p3 mcts -iterations 1000000 -seed $* | tee $@
