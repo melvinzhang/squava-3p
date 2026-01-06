@@ -3,8 +3,6 @@ package main
 import (
 	"math"
 	"math/bits"
-	"math/rand"
-	"time"
 )
 
 // --- Faster random number generation (xorshift64*) ---
@@ -25,15 +23,23 @@ type ZobristTable struct {
 
 func NewZobristTable() *ZobristTable {
 	z := &ZobristTable{}
-	r := rand.New(rand.NewSource(42))
+	// Use a local xorshift for deterministic initialization
+	s := uint64(42)
+	next := func() uint64 {
+		s ^= s >> 12
+		s ^= s << 25
+		s ^= s >> 27
+		return s * 0x2545F4914F6CDD1D
+	}
+
 	for p := 0; p < 3; p++ {
 		for i := 0; i < 64; i++ {
-			z.piece[p][i] = r.Uint64()
+			z.piece[p][i] = next()
 		}
-		z.turn[p] = r.Uint64()
+		z.turn[p] = next()
 	}
 	for i := 0; i < 256; i++ {
-		z.active[i] = r.Uint64()
+		z.active[i] = next()
 	}
 	return z
 }
@@ -515,11 +521,9 @@ func (m *MCTSPlayer) GetMove(board Board, players []int, turnIdx int) Move {
 	}
 	gs := NewGameState(board, players[turnIdx], activeMask)
 
-	startTime := time.Now()
 	totalSteps, rollouts := m.Search(gs)
-	elapsed := time.Since(startTime)
 
-	m.PrintStats(players[turnIdx], totalSteps, rollouts, elapsed)
+	m.PrintStats(players[turnIdx], totalSteps, rollouts)
 
 	bestVisits := -1
 	var bestMove Move
