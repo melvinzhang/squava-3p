@@ -12,7 +12,7 @@ build:
 
 wasm:
 	mkdir -p web/public
-	cp /usr/share/go-1.24/lib/wasm/wasm_exec.js web/public/
+	cp /usr/share/go-1.25/lib/wasm/wasm_exec.js web/public/
 	GOOS=js GOARCH=wasm $(GO) build -o web/public/squava.wasm .
 
 zip: wasm
