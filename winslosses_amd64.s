@@ -220,8 +220,7 @@ remainder:
     
     VMOVSS (SI)(DX*4), X5     // Q
     VMOVSS (DI)(DX*4), X6     // U
-    VMULSS X0, X6, X6         // coeff * U
-    VADDSS X5, X6, X6         // Q + coeff*U
+    VFMADD213SS X5, X0, X6    // X6 = X0 * X6 + X5 = coeff * U + Q
     
     VCOMISS X1, X6            // compare current score (X6) with best (X1)
     JBE next_rem
