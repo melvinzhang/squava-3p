@@ -3,7 +3,7 @@ importScripts('wasm_exec.js');
 const go = new Go();
 let wasmInstance;
 
-WebAssembly.instantiateStreaming(fetch("squava.wasm"), go.importObject).then((result) => {
+WebAssembly.instantiateStreaming(fetch("squava.wasm.gz"), go.importObject).then((result) => {
     wasmInstance = result.instance;
     go.run(wasmInstance);
     postMessage({ type: 'READY' });
