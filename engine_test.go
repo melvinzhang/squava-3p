@@ -1015,8 +1015,15 @@ func FuzzSelectBestEdge(f *testing.F) {
 		if got != want {
 			scoreGot := qs[got] + coeff*us[got]
 			scoreWant := qs[want] + coeff*us[want]
-			if math.Abs(float64(scoreGot-scoreWant)) > 1e-6 {
-				t.Errorf("AVX index %d (score %f) != Go index %d (score %f)", got, scoreGot, want, scoreWant)
+
+			// Use relative tolerance for large values to account for FMA vs sequential precision
+			absDiff := math.Abs(float64(scoreGot - scoreWant))
+			maxVal := math.Max(math.Abs(float64(scoreGot)), math.Abs(float64(scoreWant)))
+			if maxVal > 0 && absDiff/maxVal > 1e-6 {
+				t.Errorf("coeff=%f, n=%d", coeff, n)
+				t.Errorf("got=%d: qs[%d]=%e, us[%d]=%e, score=%e", got, got, qs[got], got, us[got], scoreGot)
+				t.Errorf("want=%d: qs[%d]=%e, us[%d]=%e, score=%e", want, want, qs[want], want, us[want], scoreWant)
+				t.Errorf("AVX index %d (score %e) != Go index %d (score %e)", got, scoreGot, want, scoreWant)
 			}
 		}
 	})
