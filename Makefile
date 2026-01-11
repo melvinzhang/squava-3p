@@ -13,7 +13,7 @@ build:
 wasm:
 	mkdir -p web/public
 	cp /usr/share/go-1.25/lib/wasm/wasm_exec.js web/public/
-	GOOS=js GOARCH=wasm $(GO) build -ldflags "-s -w" -o web/public/squava.wasm .
+	GOOS=js GOARCH=wasm $(GO) build -o web/public/squava.wasm .
 	gzip -9 -f web/public/squava.wasm
 
 zip: wasm

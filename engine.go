@@ -712,10 +712,6 @@ func NewMCGSNode(gs GameState) *MCGSNode {
 	return n
 }
 
-func SelectBit64(v uint64, k int) int {
-	return bits.TrailingZeros64(pdep(uint64(1)<<uint(k), v))
-}
-
 func PickRandomBit(bb Bitboard) int {
 	count := bits.OnesCount64(uint64(bb))
 	if count == 0 {

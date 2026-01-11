@@ -84,7 +84,7 @@
                     const aiPlayer = payload.board.playerID + 1;
                     status.innerText = 'Player ' + aiPlayer + ' (AI) is thinking...';
                     setTimeout(() => {
-                        worker.postMessage({ type: 'GET_AI_MOVE', payload: { iterations: 20000 } });
+                        worker.postMessage({ type: 'GET_AI_MOVE', payload: { iterations: 100000 } });
                     }, 600);
                 }
             } else if (type === 'AI_MOVE_RESULT') {

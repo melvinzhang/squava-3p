@@ -2,6 +2,8 @@
 
 package main
 
+import "math/bits"
+
 func getWinsAndLossesAVX2(b, e uint64) (w, l uint64) {
 	return getWinsAndLossesGo(b, e)
 }
@@ -22,16 +24,45 @@ func selectBestEdgeAVX2(qs []float32, us []float32, coeff float32) int {
 	return bestIdx
 }
 
-func pdep(src, mask uint64) uint64 {
-	// Simple bit-by-bit pdep implementation for non-x86
-	var res uint64
-	for i, j := 0, 0; j < 64; j++ {
-		if (mask>>j)&1 != 0 {
-			if (src>>i)&1 != 0 {
-				res |= 1 << j
-			}
-			i++
-		}
+// SelectBit64 returns the position (0-63) of the k-th set bit in v.
+// k is 0-indexed.
+// Uses a hierarchical bit-counting approach (logarithmic steps) which is
+// significantly faster than iterating or using software pdep on WASM.
+func SelectBit64(v uint64, k int) int {
+	b := 0
+	// 32-bit step
+	if n := bits.OnesCount64(v & 0xFFFFFFFF); k >= n {
+		k -= n
+		b += 32
+		v >>= 32
 	}
-	return res
+	// 16-bit step
+	if n := bits.OnesCount64(v & 0xFFFF); k >= n {
+		k -= n
+		b += 16
+		v >>= 16
+	}
+	// 8-bit step
+	if n := bits.OnesCount64(v & 0xFF); k >= n {
+		k -= n
+		b += 8
+		v >>= 8
+	}
+	// 4-bit step
+	if n := bits.OnesCount64(v & 0xF); k >= n {
+		k -= n
+		b += 4
+		v >>= 4
+	}
+	// 2-bit step
+	if n := bits.OnesCount64(v & 0x3); k >= n {
+		k -= n
+		b += 2
+		v >>= 2
+	}
+	// 1-bit step
+	if n := bits.OnesCount64(v & 0x1); k >= n {
+		b += 1
+	}
+	return b
 }
